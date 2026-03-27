@@ -1,0 +1,3 @@
+[submodule "Plugins/Schola"]
+	path = Plugins/Schola
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/Schola.git
