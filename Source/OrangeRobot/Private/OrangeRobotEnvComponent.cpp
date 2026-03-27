@@ -1,147 +1,208 @@
-// Fill out your copyright notice in the Description page of Project Settings.
-
+ï»¿// Fill out your copyright notice in the Description page of Project Settings.
 
 #include "OrangeRobotEnvComponent.h"
-#include "PhysicsEngine/PhysicsConstraintComponent.h" 
-#include "Components/StaticMeshComponent.h"          
+
+// å…³èŠ‚è§’é€Ÿåº¦ç›®æ ‡ç¼©æ”¾ç³»æ•°ï¼ˆå°†å½’ä¸€åŒ–åŠ¨ä½œ [-1,1] æ˜ å°„åˆ°ç‰©ç†å•ä½ Â°/sï¼‰
+// å¯æ ¹æ®å®é™…è°ƒè¯•ç»“æœåœ¨è“å›¾ä¸­æ›¿æ¢ä¸º UPROPERTYï¼Œæ­¤å¤„ä½œä¸ºå†…éƒ¨å¸¸é‡
+static constexpr float JointVelocityScale = 180.0f;
 
 UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
 {
+    PrimaryComponentTick.bCanEverTick = false;
 }
 
-UOrangeRobotEnvComponent::~UOrangeRobotEnvComponent()
+// ---------------------------------------------------------------------------
+// ç©ºé—´ç»´åº¦æŸ¥è¯¢
+// ---------------------------------------------------------------------------
+
+int32 UOrangeRobotEnvComponent::GetObservationDim() const
 {
+    // æ ¹çŠ¶æ€ï¼šä½ç½®(3) + æ—‹è½¬(3) + çº¿é€Ÿåº¦(3) + è§’é€Ÿåº¦(3) = 12
+    // æ¯ä¸ªé©±åŠ¨å…³èŠ‚ï¼šTwistè§’åº¦(1) + å­è¿æ†è§’é€Ÿåº¦æ²¿ä¸»è½´(1) = 2
+    return 12 + DriveConstraints.Num() * 2;
 }
 
-//ÉèÖÃÎïÀíÔ¼ÊøºÍÍø¸ñ×é¼ş
-void UOrangeRobotEnvComponent::SetConstraintsAndLinks(
-    const TArray<UPhysicsConstraintComponent*>& InConstraints,
-    const TArray<UStaticMeshComponent*>& InLinks)
+int32 UOrangeRobotEnvComponent::GetActionDim() const
 {
-    CachedConstraints = InConstraints;
-    CachedLinks = InLinks;
-
-    //// »º´æ³õÊ¼±ä»»£¨¿ÉÑ¡£©
-    //InitialLinkTransforms.Empty();
-    //for (UStaticMeshComponent* Link : CachedLinks)
-    //{
-    //    if (Link)
-    //        InitialLinkTransforms.Add(Link->GetComponentTransform());
-    //}
+    return DriveConstraints.Num();
 }
 
+// ---------------------------------------------------------------------------
+// åˆå§‹ Transform è®°å½•
+// ---------------------------------------------------------------------------
 
-//Ó¦ÓÃ¶¯×÷
+void UOrangeRobotEnvComponent::CaptureInitialTransform()
+{
+    if (RobotActor)
+    {
+        InitialRobotTransform = RobotActor->GetActorTransform();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stepï¼šæ–½åŠ åŠ¨ä½œ
+// ---------------------------------------------------------------------------
+
 void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 {
     if (!RobotActor) return;
 
-    // È·±£¶¯×÷ÊıÁ¿Óë¹Ø½ÚÊıÁ¿Æ¥Åä
-    int32 NumJoints = CachedConstraints.Num();
+    const int32 NumJoints = DriveConstraints.Num();
     for (int32 i = 0; i < FMath::Min(Action.Num(), NumJoints); ++i)
     {
-        UPhysicsConstraintComponent* Constraint = CachedConstraints[i];
-        if (Constraint)
-        {
-            // Ê¾Àı£º½«¶¯×÷Öµ×÷Îª½ÇËÙ¶ÈÄ¿±ê£¨»¡¶È/Ãë£©
-            // ¾ßÌåÇı¶¯Ä£Ê½Ğè²Î¿¼ÄãÔÚ»úÆ÷ÈËÀ¶Í¼ÖĞÉèÖÃµÄ Angular Drive Mode
-            Constraint->SetAngularVelocityTarget(FVector(Action[i], 0.0f, 0.0f));
-        }
+        UPhysicsConstraintComponent* Constraint = DriveConstraints[i];
+        if (!Constraint) continue;
+
+        // å°†å½’ä¸€åŒ–åŠ¨ä½œç¼©æ”¾ä¸ºè§’é€Ÿåº¦ç›®æ ‡ï¼ˆÂ°/sï¼‰ï¼Œé©±åŠ¨è½´ä¸º Xï¼ˆTwistï¼‰
+        // æ³¨æ„ï¼šè“å›¾ä¸­éœ€ç¡®ä¿å¯¹åº”çº¦æŸå·²å¼€å¯ Angular Velocity Driveï¼ˆTwist Driveï¼‰
+        const float VelTarget = FMath::Clamp(Action[i], -1.0f, 1.0f) * JointVelocityScale;
+        Constraint->SetAngularVelocityTarget(FVector(VelTarget, 0.0f, 0.0f));
     }
+
+    // ç¼“å­˜æœ¬å¸§åŠ¨ä½œç”¨äºå¹³æ»‘æƒ©ç½š
+    LastAction = Action;
+    CurrentStep++;
 }
 
+// ---------------------------------------------------------------------------
+// Stepï¼šæ”¶é›†è§‚æµ‹
+// ---------------------------------------------------------------------------
 
-//ÊÕ¼¯¹Û²âÊı¾İ
-TArray<float> UOrangeRobotEnvComponent::CollectObservations()
+TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
 {
     TArray<float> Obs;
+    Obs.Reserve(GetObservationDim());
 
     if (!RobotActor) return Obs;
 
-    // 1. »úÆ÷ÈËÉíÌåÎ»ÖÃ (X, Y, Z)
-    FVector Location = RobotActor->GetActorLocation();
+    // 1. æ ¹ Actor ä½ç½®ï¼ˆä¸–ç•Œç©ºé—´ï¼Œcmï¼‰
+    const FVector Location = RobotActor->GetActorLocation();
     Obs.Add(Location.X);
     Obs.Add(Location.Y);
     Obs.Add(Location.Z);
 
-    // 2. »úÆ÷ÈËÉíÌåĞı×ª (Pitch, Roll, Yaw)
-    FRotator Rotation = RobotActor->GetActorRotation();
+    // 2. æ ¹ Actor æ—‹è½¬ï¼ˆåº¦ï¼‰
+    const FRotator Rotation = RobotActor->GetActorRotation();
     Obs.Add(Rotation.Pitch);
     Obs.Add(Rotation.Roll);
     Obs.Add(Rotation.Yaw);
 
-    // 3. Ã¿¸ö¹Ø½ÚµÄµ±Ç°½Ç¶È£¨Ğè¸ù¾İÔ¼ÊøÀàĞÍ»ñÈ¡£©
-    for (UPhysicsConstraintComponent* Constraint : CachedConstraints)
-    {
-        if (Constraint)
-        {
-            // Ê¾Àı£º»ñÈ¡ Twist ½Ç¶È£¨Ğè¸ù¾İÔ¼ÊøÖáµ÷Õû£©
-            float Angle = Constraint->GetCurrentTwist();
-            Obs.Add(Angle);
-        }
-    }
+    // 3. æ ¹ Actor çº¿é€Ÿåº¦ï¼ˆcm/sï¼‰
+    const FVector LinVel = RobotActor->GetVelocity();
+    Obs.Add(LinVel.X);
+    Obs.Add(LinVel.Y);
+    Obs.Add(LinVel.Z);
 
-    // 4. Ã¿¸ö¹Ø½ÚµÄ½ÇËÙ¶È
-    for (UPhysicsConstraintComponent* Constraint : CachedConstraints)
+    // 4. æ ¹ Actor è§’é€Ÿåº¦ï¼ˆrad/sï¼Œé€šè¿‡èº¯å¹² StaticMesh è¯»å–ï¼‰
+    //    è‹¥èº¯å¹²ä¸åœ¨ BodyLinks ä¸­ï¼Œåˆ™å¡« 0 ä¿æŒç»´åº¦ä¸€è‡´
+    FVector RootAngVel = FVector::ZeroVector;
+    if (BodyLinks.Num() > 0 && BodyLinks[0])
     {
-        if (Constraint)
+        RootAngVel = BodyLinks[0]->GetPhysicsAngularVelocityInRadians();
+    }
+    Obs.Add(RootAngVel.X);
+    Obs.Add(RootAngVel.Y);
+    Obs.Add(RootAngVel.Z);
+
+    // 5. æ¯ä¸ªé©±åŠ¨å…³èŠ‚ï¼šTwist è§’åº¦ + å­è¿æ†è§’é€Ÿåº¦ä¸»è½´åˆ†é‡
+    const int32 NumJoints = DriveConstraints.Num();
+    for (int32 i = 0; i < NumJoints; ++i)
+    {
+        // 5a. Twist è§’åº¦ï¼ˆåº¦ï¼‰
+        float TwistAngle = 0.0f;
+        if (DriveConstraints[i])
         {
-            //FVector AngularVel = Constraint->GetAngularVelocityTarget(); // Êµ¼ÊĞè»ñÈ¡µ±Ç°½ÇËÙ¶È
-            //Obs.Add(AngularVel.X); // ¸ù¾İÄãµÄ¿ØÖÆÖáµ÷Õû
+            TwistAngle = DriveConstraints[i]->GetCurrentTwist();
         }
+        Obs.Add(TwistAngle);
+
+        // 5b. å­è¿æ†è§’é€Ÿåº¦ä¸»è½´ï¼ˆXï¼‰åˆ†é‡ï¼ˆrad/sï¼‰
+        float AngVelX = 0.0f;
+        if (BodyLinks.IsValidIndex(i) && BodyLinks[i])
+        {
+            AngVelX = BodyLinks[i]->GetPhysicsAngularVelocityInRadians().X;
+        }
+        Obs.Add(AngVelX);
     }
 
     return Obs;
 }
 
+// ---------------------------------------------------------------------------
+// Stepï¼šè®¡ç®—å¥–åŠ±
+// ---------------------------------------------------------------------------
 
-//¼ÆËã½±Àø
-float UOrangeRobotEnvComponent::ComputeReward()
+float UOrangeRobotEnvComponent::ComputeReward() const
 {
+    if (!RobotActor) return 0.0f;
+
     float Reward = 0.0f;
 
-    if (!RobotActor) return Reward;
+    // 1. å‘å‰è¡Œèµ°å¥–åŠ±ï¼ˆä¸–ç•Œ X è½´æ­£æ–¹å‘çº¿é€Ÿåº¦ï¼‰
+    const float ForwardVel = RobotActor->GetVelocity().X;
+    Reward += ForwardVel * ForwardRewardScale;
 
-    // ÏòÇ°ËÙ¶È½±Àø£¨¼ÙÉè X ÖáÕıÏò£©
-    FVector Velocity = RobotActor->GetVelocity();
-    Reward += Velocity.X * 0.1f;
+    // 2. å­˜æ´»å¥–åŠ±
+    Reward += AliveReward;
 
-    // ´æ»î½±Àø£¨Ã¿²½¹Ì¶¨Ğ¡½±Àø£©
-    Reward += 0.01f;
-
-    // Ë¤µ¹³Í·££ºÈç¹ûÉíÌåÇãĞ±¹ı´ó
-    FRotator Rotation = RobotActor->GetActorRotation();
-    float Tilt = FMath::Abs(Rotation.Pitch) + FMath::Abs(Rotation.Roll);
-    if (Tilt > 45.0f)
+    // 3. æ‘”å€’æƒ©ç½šï¼ˆè‹¥å·²æ‘”å€’åˆ™æ‰£åˆ†ï¼Œç»ˆæ­¢ç”± CheckFallen è´Ÿè´£ï¼‰
+    if (CheckFallen())
     {
-        Reward -= 10.0f;
+        Reward -= FallPenalty;
+    }
+
+    // 4. åŠ¨ä½œå¹³æ»‘æƒ©ç½šï¼ˆæŠ‘åˆ¶æŠ–æŒ¯ï¼‰
+    if (LastAction.Num() == DriveConstraints.Num())
+    {
+        float SmoothPenalty = 0.0f;
+        for (const float A : LastAction)
+        {
+            SmoothPenalty += A * A;
+        }
+        Reward -= SmoothPenalty * ActionSmoothPenaltyScale;
     }
 
     return Reward;
 }
 
+// ---------------------------------------------------------------------------
+// Stepï¼šç»ˆæ­¢æ¡ä»¶
+// ---------------------------------------------------------------------------
 
-//ÖØÖÃ×´Ì¬
+bool UOrangeRobotEnvComponent::CheckFallen() const
+{
+    if (!RobotActor) return false;
+
+    const FRotator Rot = RobotActor->GetActorRotation();
+    const float Tilt = FMath::Abs(Rot.Pitch) + FMath::Abs(Rot.Roll);
+    return Tilt > FallTiltThreshold;
+}
+
+// ---------------------------------------------------------------------------
+// Reset
+// ---------------------------------------------------------------------------
+
 void UOrangeRobotEnvComponent::ResetEnv()
 {
+    CurrentStep = 0;
+    LastAction.Empty();
+
     if (!RobotActor) return;
 
-    // 1. ÖØÖÃ»úÆ÷ÈËÎ»ÖÃºÍĞı×ª£¨Ğè»úÆ÷ÈËÀ¶Í¼Ìá¹©½Ó¿Ú£¬»òÖ±½ÓÉèÖÃ£©
-    RobotActor->SetActorLocation(FVector(0.0f, 0.0f, 100.0f));
-    RobotActor->SetActorRotation(FRotator::ZeroRotator);
+    // 1. æ¢å¤æ ¹ Actor çš„ä½ç½®ä¸æ—‹è½¬
+    RobotActor->SetActorTransform(InitialRobotTransform, false, nullptr, ETeleportType::ResetPhysics);
 
-    // 2. ÖØÖÃËùÓĞÎïÀíÔ¼ÊøµÄ×´Ì¬£¨ÈçËÙ¶È¡¢Ä¿±ê£©
-    for (UPhysicsConstraintComponent* Constraint : CachedConstraints)
+    // 2. æ¸…é›¶æ‰€æœ‰å…³èŠ‚è§’é€Ÿåº¦ç›®æ ‡
+    for (UPhysicsConstraintComponent* Constraint : DriveConstraints)
     {
         if (Constraint)
         {
             Constraint->SetAngularVelocityTarget(FVector::ZeroVector);
-            // ¿ÉÄÜ»¹ĞèÒªÖØÖÃÔ¼ÊøÇı¶¯Ä¿±ê
         }
     }
 
-    // 3. ÖØÖÃËùÓĞ¹Ø½ÚÍø¸ñÌåµÄÎïÀí×´Ì¬£¨¿ÉÑ¡£¬Èç¹ûÆôÓÃÁËÎïÀí£©
-    for (UStaticMeshComponent* Link : CachedLinks)
+    // 3. æ¸…é›¶æ‰€æœ‰è¿æ†çš„çº¿é€Ÿåº¦ä¸è§’é€Ÿåº¦
+    for (UStaticMeshComponent* Link : BodyLinks)
     {
         if (Link && Link->IsSimulatingPhysics())
         {
