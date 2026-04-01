@@ -31,11 +31,11 @@
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent
 {
-    GENERATED_BODY()
+	GENERATED_BODY()
 
 public:
 
-    UOrangeRobotEnvComponent();
+	UOrangeRobotEnvComponent();
 
     // -----------------------------------------------------------------------
     // 蓝图可配置属性
