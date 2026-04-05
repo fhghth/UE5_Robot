@@ -45,6 +45,14 @@ void UOrangeRobotEnvComponent::CaptureInitialTransform()
 
 void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 {
+	//打印动作日志
+	UE_LOG(LogTemp, Warning, TEXT("ApplyAction received, Action.Num() = %d"), Action.Num());
+	for (int32 i = 0; i < Action.Num(); ++i)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("Action[%d] = %f"), i, Action[i]);
+	}
+
+
 	if (!RobotActor) return;
 
 	const int32 NumJoints = DriveConstraints.Num();
