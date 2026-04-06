@@ -36,13 +36,16 @@ struct FOrangeRobotConstraintAxisCache
  * 蓝图负责实现 Schola 接口（InitializeEnvironment / Reset / Step），
  * 本组件负责封装物理关节的读写、观测收集、奖励计算和环境重置逻辑。
  *
- * 机器人有效驱动关节（锁定约束 B-R0、B-R4 已排除，共 13 个）：
- *   腿部（左/右各 3 个）：髋关节(R4-R5)、膝关节(R5-R6)、踝关节(R6-R7)
- *   臂部（左/右各 2 个）：肩关节(R0-R1)、腕关节(R2-R3)
- *   头部（1 个）         ：颈关节(H-B)
+ * 机器人可驱动约束列表。
+ * 当前动作空间不再简单等于约束数量，而是会在运行时根据每个约束的：
+ *   - 角驱动模式（TwistAndSwing / SLERP）
+ *   - 速度驱动启用状态
+ *   - Twist / Swing1 / Swing2 的 Motion 是否被锁定
+ * 自动推导每个约束实际可控的动作轴。
+ * 推荐顺序仍为：右髋、右膝、右踝、左髋、左膝、左踝、右肩、右腕、左肩、左腕、颈
  *
  * 蓝图配置步骤：
- *   1. DriveConstraints 按顺序填入 13 个物理约束组件
+ *   1. DriveConstraints 按顺序填入需要参与训练的物理约束组件
  *      推荐顺序：右髋、右膝、右踝、左髋、左膝、左踝、右肩、右腕、左肩、左腕、颈
  *   2. BodyLinks 按与 DriveConstraints 相同顺序填入子连杆的 StaticMeshComponent
  *   3. RobotActor 指向机器人根 Actor
@@ -66,9 +69,19 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     AActor* RobotActor = nullptr;
 
+    /*机器人静态网格躯干，用于检测摔倒*/
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
+    USceneComponent* TiltCheckComponent = nullptr;
+    
+    /** 机器人初始 BodyLink Transform（Reset 时恢复用）
+     * 调用 CaptureInitialTransform() 后自动填充，也可在蓝图中手动覆盖
+     */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
+    TArray<FTransform> InitialBodyLinkTransforms = TArray<FTransform>() ;
+
     /**
-     * 有效驱动关节的物理约束组件（共 13 个，锁定约束不加入）
-     * 推荐顺序：右髋、右膝、右踝、左髋、左膝、左踝、右肩、右腕、左肩、左腕、颈
+     * 参与训练的物理约束组件列表。
+     * 动作维度会在运行时根据约束驱动模式、速度驱动状态和 Twist/Swing1/Swing2 的 Motion 自动计算。
      */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     TArray<UPhysicsConstraintComponent*> DriveConstraints;
@@ -138,15 +151,15 @@ public:
     /**
      * 返回观测向量维度
      * 构成：根位置(3) + 根旋转(3) + 根线速度(3) + 根角速度(3)
-     *       + 每驱动关节 [Twist角度(1) + 角速度(1)] * NumDriveJoints
-     * 即：12 + DriveConstraints.Num() * 2
+     *      + 每个约束 [Twist角度, Swing1角度, Swing2角度, X角速度, Y角速度, Z角速度]
+     * 即：12 + DriveConstraints.Num() * 6
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetObservationDim() const;
 
     /**
-     * 返回动作向量维度 = DriveConstraints.Num()
-     * 每元素为归一化角速度目标 [-1, 1]，ApplyAction 内部缩放到物理单位
+     * 返回动作向量维度 = 所有约束实际可控轴数量之和
+     * 维度来自缓存的 JointActionAxes，按每个约束的 Twist(X) / Swing1(Y) / Swing2(Z) 可控状态累加
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetActionDim() const;
@@ -156,7 +169,8 @@ public:
     // -----------------------------------------------------------------------
 
     /**
-     * 将归一化动作 [-1, 1] 应用到对应关节的角速度目标
+     * 将归一化动作 [-1, 1] 应用到每个约束实际可控的角速度目标
+     * 动作展开顺序：按 DriveConstraints 顺序遍历，每个约束内部按 Twist(X) -> Swing1(Y) -> Swing2(Z)
      * @param Action 长度必须等于 GetActionDim()
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
@@ -164,6 +178,7 @@ public:
 
     /**
      * 收集当前帧观测向量，长度等于 GetObservationDim()
+     * 当前每个约束固定输出 6 个值：Twist/Swing1/Swing2 角度 + X/Y/Z 角速度
      * 将返回值封装为 FBoxPoint 后填入 OutAgentState.Observations
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
@@ -189,13 +204,14 @@ public:
 
     /**
      * 将机器人恢复到 InitialRobotTransform，清零所有连杆线速度和角速度，
-     * 清零所有关节角速度目标，并将 CurrentStep 重置为 0
+     * 清零所有关节角速度目标，并重新缓存各约束的可控动作轴，再将 CurrentStep 重置为 0
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
     void ResetEnv();
 
     /**
-     * 记录当前 RobotActor 的 Transform 为 InitialRobotTransform
+     * 记录当前 RobotActor 的 Transform 为 InitialRobotTransform，
+     * 并同步缓存每个约束的可控动作轴信息。
      * 建议在蓝图 InitializeEnvironment 实现的最后调用一次
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
