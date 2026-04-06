@@ -5,8 +5,29 @@
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
+#include "PhysicsEngine/ConstraintInstanceBlueprintLibrary.h"
 #include "Components/StaticMeshComponent.h"
 #include "OrangeRobotEnvComponent.generated.h"
+
+USTRUCT(BlueprintType)
+struct FOrangeRobotConstraintAxisCache
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "Robot|Debug")
+	bool bUseTwist = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Robot|Debug")
+	bool bUseSwing1 = false;
+
+	UPROPERTY(VisibleAnywhere, Category = "Robot|Debug")
+	bool bUseSwing2 = false;
+
+	int32 GetAxisCount() const
+	{
+		return (bUseTwist ? 1 : 0) + (bUseSwing1 ? 1 : 0) + (bUseSwing2 ? 1 : 0);
+	}
+};
 
 /**
  * UOrangeRobotEnvComponent
@@ -180,7 +201,25 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
     void CaptureInitialTransform();
 
+    /**
+     * 打印当前所有 DriveConstraints 的驱动模式、速度驱动状态与角轴约束状态到 UE 日志
+     * 便于确认 UPhysicsConstraintComponent 返回信息是否符合预期
+     */
+    UFUNCTION(BlueprintCallable, Category = "Robot|Debug")
+    void LogDriveConstraintStates() const;
+
+    /** 当前每个约束缓存出的可控动作轴数量 */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
+    TArray<int32> JointActionAxes;
+
+    /** 当前每个约束缓存出的可控轴详情（Twist / Swing1 / Swing2） */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
+    TArray<FOrangeRobotConstraintAxisCache> JointAxisCaches;
+
 private:
+
+    void CacheJointActionAxes();
+    FOrangeRobotConstraintAxisCache BuildConstraintAxisCache(UPhysicsConstraintComponent* Constraint) const;
 
     /** 上一帧动作缓存，用于动作平滑惩罚计算 */
     TArray<float> LastAction;

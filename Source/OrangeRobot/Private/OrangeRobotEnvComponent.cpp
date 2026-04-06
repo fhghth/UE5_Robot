@@ -1,14 +1,148 @@
 // Fill out your copyright notice in the Description page of Project Settings.
 
 #include "OrangeRobotEnvComponent.h"
+#include "PhysicsEngine/ConstraintInstance.h"
 
 // 关节角速度目标缩放系数（将归一化动作 [-1,1] 映射到物理单位 °/s）
 // 可根据实际调试结果在蓝图中替换为 UPROPERTY，此处作为内部常量
 static constexpr float JointVelocityScale = 180.0f;
 
+namespace
+{
+	const TCHAR* AngularDriveModeToString(EAngularDriveMode::Type DriveMode)
+	{
+		switch (DriveMode)
+		{
+		case EAngularDriveMode::SLERP:
+			return TEXT("SLERP");
+		case EAngularDriveMode::TwistAndSwing:
+			return TEXT("TwistAndSwing");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	const TCHAR* AngularMotionToString(EAngularConstraintMotion Motion)
+	{
+		switch (Motion)
+		{
+		case ACM_Free:
+			return TEXT("Free");
+		case ACM_Limited:
+			return TEXT("Limited");
+		case ACM_Locked:
+			return TEXT("Locked");
+		default:
+			return TEXT("Unknown");
+		}
+	}
+
+	void GetAngularMotions(
+		UPhysicsConstraintComponent* Constraint,
+		EAngularConstraintMotion& TwistMotion,
+		EAngularConstraintMotion& Swing1Motion,
+		EAngularConstraintMotion& Swing2Motion)
+	{
+		TwistMotion = ACM_Locked;
+		Swing1Motion = ACM_Locked;
+		Swing2Motion = ACM_Locked;
+
+		if (!Constraint)
+		{
+			return;
+		}
+
+		FConstraintInstance& ConstraintInstance = Constraint->ConstraintInstance;
+		TwistMotion = ConstraintInstance.GetAngularTwistMotion();
+		Swing1Motion = ConstraintInstance.GetAngularSwing1Motion();
+		Swing2Motion = ConstraintInstance.GetAngularSwing2Motion();
+	}
+}
+
 UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
 {
 	PrimaryComponentTick.bCanEverTick = false;
+}
+
+// ---------------------------------------------------------------------------
+// 约束轴缓存
+// ---------------------------------------------------------------------------
+
+FOrangeRobotConstraintAxisCache UOrangeRobotEnvComponent::BuildConstraintAxisCache(UPhysicsConstraintComponent* Constraint) const
+{
+	FOrangeRobotConstraintAxisCache AxisCache;
+	if (!Constraint)
+	{
+		return AxisCache;
+	}
+
+	FConstraintInstanceAccessor Accessor(Constraint);
+	TEnumAsByte<EAngularDriveMode::Type> DriveMode = EAngularDriveMode::Type::TwistAndSwing;
+	bool bTwistVelocityDriveEnabled = false;
+	bool bSwingVelocityDriveEnabled = false;
+	bool bSlerpVelocityDriveEnabled = false;
+
+	UConstraintInstanceBlueprintLibrary::GetAngularDriveMode(Accessor, DriveMode);
+	UConstraintInstanceBlueprintLibrary::GetAngularVelocityDriveTwistAndSwing(
+		Accessor,
+		bTwistVelocityDriveEnabled,
+		bSwingVelocityDriveEnabled);
+	UConstraintInstanceBlueprintLibrary::GetAngularVelocityDriveSLERP(
+		Accessor,
+		bSlerpVelocityDriveEnabled);
+
+	EAngularConstraintMotion TwistMotion = ACM_Locked;
+	EAngularConstraintMotion Swing1Motion = ACM_Locked;
+	EAngularConstraintMotion Swing2Motion = ACM_Locked;
+	GetAngularMotions(Constraint, TwistMotion, Swing1Motion, Swing2Motion);
+
+	if (DriveMode == EAngularDriveMode::Type::TwistAndSwing)
+	{
+		AxisCache.bUseTwist = bTwistVelocityDriveEnabled && TwistMotion != ACM_Locked;
+		AxisCache.bUseSwing1 = bSwingVelocityDriveEnabled && Swing1Motion != ACM_Locked;
+		AxisCache.bUseSwing2 = bSwingVelocityDriveEnabled && Swing2Motion != ACM_Locked;
+	}
+	else if (DriveMode == EAngularDriveMode::Type::SLERP)
+	{
+		const bool bHasAnyAngularFreedom =
+			TwistMotion != ACM_Locked || Swing1Motion != ACM_Locked || Swing2Motion != ACM_Locked;
+
+		if (bSlerpVelocityDriveEnabled && bHasAnyAngularFreedom)
+		{
+			AxisCache.bUseTwist = TwistMotion != ACM_Locked;
+			AxisCache.bUseSwing1 = Swing1Motion != ACM_Locked;
+			AxisCache.bUseSwing2 = Swing2Motion != ACM_Locked;
+		}
+	}
+
+	return AxisCache;
+}
+
+void UOrangeRobotEnvComponent::CacheJointActionAxes()
+{
+	JointActionAxes.Empty();
+	JointAxisCaches.Empty();
+	JointActionAxes.Reserve(DriveConstraints.Num());
+	JointAxisCaches.Reserve(DriveConstraints.Num());
+
+	for (int32 Index = 0; Index < DriveConstraints.Num(); ++Index)
+	{
+		UPhysicsConstraintComponent* Constraint = DriveConstraints[Index];
+		const FOrangeRobotConstraintAxisCache AxisCache = BuildConstraintAxisCache(Constraint);
+		JointAxisCaches.Add(AxisCache);
+		JointActionAxes.Add(AxisCache.GetAxisCount());
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("Joint %d (%s) cached action axes = %d [Twist=%s, Swing1=%s, Swing2=%s]"),
+			Index,
+			Constraint ? *Constraint->GetName() : TEXT("nullptr"),
+			AxisCache.GetAxisCount(),
+			AxisCache.bUseTwist ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing1 ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing2 ? TEXT("true") : TEXT("false"));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -18,13 +152,18 @@ UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
 int32 UOrangeRobotEnvComponent::GetObservationDim() const
 {
 	// 根状态：位置(3) + 旋转(3) + 线速度(3) + 角速度(3) = 12
-	// 每个驱动关节：Twist角度(1) + 子连杆角速度沿主轴(1) = 2
-	return 12 + DriveConstraints.Num() * 2;
+	// 每个驱动关节：Twist / Swing1 / Swing2 各自的角度与角速度，共 6
+	return 12 + DriveConstraints.Num() * 6;
 }
 
 int32 UOrangeRobotEnvComponent::GetActionDim() const
 {
-	return DriveConstraints.Num();
+	int32 TotalAxes = 0;
+	for (const int32 Axes : JointActionAxes)
+	{
+		TotalAxes += Axes;
+	}
+	return TotalAxes;
 }
 
 // ---------------------------------------------------------------------------
@@ -37,37 +176,142 @@ void UOrangeRobotEnvComponent::CaptureInitialTransform()
 	{
 		InitialRobotTransform = RobotActor->GetActorTransform();
 	}
+
+	CacheJointActionAxes();
+	LogDriveConstraintStates();
 }
 
+void UOrangeRobotEnvComponent::LogDriveConstraintStates() const
+{
+	UE_LOG(LogTemp, Warning, TEXT("========== OrangeRobot Drive Constraint Debug =========="));
+	UE_LOG(LogTemp, Warning, TEXT("DriveConstraints.Num() = %d"), DriveConstraints.Num());
+
+	for (int32 Index = 0; Index < DriveConstraints.Num(); ++Index)
+	{
+		UPhysicsConstraintComponent* Constraint = DriveConstraints[Index];
+		if (!Constraint)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("Constraint[%d]: nullptr"), Index);
+			continue;
+		}
+
+		FConstraintInstanceAccessor Accessor(Constraint);
+		TEnumAsByte<EAngularDriveMode::Type> DriveMode = EAngularDriveMode::Type::TwistAndSwing;
+		bool bTwistVelocityDriveEnabled = false;
+		bool bSwingVelocityDriveEnabled = false;
+		bool bSlerpVelocityDriveEnabled = false;
+
+		UConstraintInstanceBlueprintLibrary::GetAngularDriveMode(Accessor, DriveMode);
+		UConstraintInstanceBlueprintLibrary::GetAngularVelocityDriveTwistAndSwing(
+			Accessor,
+			bTwistVelocityDriveEnabled,
+			bSwingVelocityDriveEnabled);
+		UConstraintInstanceBlueprintLibrary::GetAngularVelocityDriveSLERP(
+			Accessor,
+			bSlerpVelocityDriveEnabled);
+
+		EAngularConstraintMotion TwistMotion = ACM_Locked;
+		EAngularConstraintMotion Swing1Motion = ACM_Locked;
+		EAngularConstraintMotion Swing2Motion = ACM_Locked;
+		GetAngularMotions(Constraint, TwistMotion, Swing1Motion, Swing2Motion);
+
+		const FOrangeRobotConstraintAxisCache AxisCache = BuildConstraintAxisCache(Constraint);
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("Constraint[%d] Name=%s | DriveMode=%s | VelDrive(Twist=%s, Swing=%s, SLERP=%s) | Motion(Twist=%s, Swing1=%s, Swing2=%s) | CachedAxes=%d [X=%s,Y=%s,Z=%s]"),
+			Index,
+			*Constraint->GetName(),
+			AngularDriveModeToString(DriveMode.GetValue()),
+			bTwistVelocityDriveEnabled ? TEXT("true") : TEXT("false"),
+			bSwingVelocityDriveEnabled ? TEXT("true") : TEXT("false"),
+			bSlerpVelocityDriveEnabled ? TEXT("true") : TEXT("false"),
+			AngularMotionToString(TwistMotion),
+			AngularMotionToString(Swing1Motion),
+			AngularMotionToString(Swing2Motion),
+			AxisCache.GetAxisCount(),
+			AxisCache.bUseTwist ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing1 ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing2 ? TEXT("true") : TEXT("false"));
+	}
+
+	UE_LOG(LogTemp, Warning, TEXT("======================================================="));
+}
 // ---------------------------------------------------------------------------
 // Step：施加动作
 // ---------------------------------------------------------------------------
 
 void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 {
-	//打印动作日志
-	UE_LOG(LogTemp, Warning, TEXT("ApplyAction received, Action.Num() = %d"), Action.Num());
+	UE_LOG(LogTemp, Warning, TEXT("ApplyAction received, Action.Num() = %d, ExpectedActionDim = %d"), Action.Num(), GetActionDim());
 	for (int32 i = 0; i < Action.Num(); ++i)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("Action[%d] = %f"), i, Action[i]);
 	}
 
-
 	if (!RobotActor) return;
 
-	const int32 NumJoints = DriveConstraints.Num();
-	for (int32 i = 0; i < FMath::Min(Action.Num(), NumJoints); ++i)
+	if (JointActionAxes.Num() != DriveConstraints.Num() || JointAxisCaches.Num() != DriveConstraints.Num())
 	{
-		UPhysicsConstraintComponent* Constraint = DriveConstraints[i];
-		if (!Constraint) continue;
-
-		// 将归一化动作缩放为角速度目标（°/s），驱动轴为 X（Twist）
-		// 注意：蓝图中需确保对应约束已开启 Angular Velocity Drive（Twist Drive）
-		const float VelTarget = FMath::Clamp(Action[i], -1.0f, 1.0f) * JointVelocityScale;
-		Constraint->SetAngularVelocityTarget(FVector(VelTarget, 0.0f, 0.0f));
+		CacheJointActionAxes();
 	}
 
-	// 缓存本帧动作用于平滑惩罚
+	int32 ActionIndex = 0;
+	for (int32 JointIndex = 0; JointIndex < DriveConstraints.Num(); ++JointIndex)
+	{
+		UPhysicsConstraintComponent* Constraint = DriveConstraints[JointIndex];
+		if (!Constraint || !JointAxisCaches.IsValidIndex(JointIndex))
+		{
+			continue;
+		}
+
+		const FOrangeRobotConstraintAxisCache& AxisCache = JointAxisCaches[JointIndex];
+		FVector TargetVel = FVector::ZeroVector;
+
+		if (AxisCache.bUseTwist)
+		{
+			if (Action.IsValidIndex(ActionIndex))
+			{
+				TargetVel.X = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
+			}
+			++ActionIndex;
+		}
+
+		if (AxisCache.bUseSwing1)
+		{
+			if (Action.IsValidIndex(ActionIndex))
+			{
+				TargetVel.Y = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
+			}
+			++ActionIndex;
+		}
+
+		if (AxisCache.bUseSwing2)
+		{
+			if (Action.IsValidIndex(ActionIndex))
+			{
+				TargetVel.Z = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
+			}
+			++ActionIndex;
+		}
+
+		Constraint->SetAngularVelocityTarget(TargetVel);
+
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("ApplyAction -> Joint[%d] %s | TargetVel=(%f, %f, %f) | EnabledAxes[X=%s,Y=%s,Z=%s]"),
+			JointIndex,
+			*Constraint->GetName(),
+			TargetVel.X,
+			TargetVel.Y,
+			TargetVel.Z,
+			AxisCache.bUseTwist ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing1 ? TEXT("true") : TEXT("false"),
+			AxisCache.bUseSwing2 ? TEXT("true") : TEXT("false"));
+	}
+
 	LastAction = Action;
 	CurrentStep++;
 }
@@ -112,25 +356,31 @@ TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
 	Obs.Add(RootAngVel.Y);
 	Obs.Add(RootAngVel.Z);
 
-	// 5. 每个驱动关节：Twist 角度 + 子连杆角速度主轴分量
+	// 5. 每个驱动关节：Twist / Swing1 / Swing2 的角度与角速度
 	const int32 NumJoints = DriveConstraints.Num();
 	for (int32 i = 0; i < NumJoints; ++i)
 	{
-		// 5a. Twist 角度（度）
 		float TwistAngle = 0.0f;
+		float Swing1Angle = 0.0f;
+		float Swing2Angle = 0.0f;
 		if (DriveConstraints[i])
 		{
 			TwistAngle = DriveConstraints[i]->GetCurrentTwist();
+			Swing1Angle = DriveConstraints[i]->GetCurrentSwing1();
+			Swing2Angle = DriveConstraints[i]->GetCurrentSwing2();
 		}
 		Obs.Add(TwistAngle);
+		Obs.Add(Swing1Angle);
+		Obs.Add(Swing2Angle);
 
-		// 5b. 子连杆角速度主轴（X）分量（rad/s）
-		float AngVelX = 0.0f;
+		FVector AngularVelocity = FVector::ZeroVector;
 		if (BodyLinks.IsValidIndex(i) && BodyLinks[i])
 		{
-			AngVelX = BodyLinks[i]->GetPhysicsAngularVelocityInRadians().X;
+			AngularVelocity = BodyLinks[i]->GetPhysicsAngularVelocityInRadians();
 		}
-		Obs.Add(AngVelX);
+		Obs.Add(AngularVelocity.X);
+		Obs.Add(AngularVelocity.Y);
+		Obs.Add(AngularVelocity.Z);
 	}
 
 	return Obs;
@@ -160,7 +410,7 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 	}
 
 	// 4. 动作平滑惩罚（抑制抖振）
-	if (LastAction.Num() == DriveConstraints.Num())
+	if (LastAction.Num() == GetActionDim())
 	{
 		float SmoothPenalty = 0.0f;
 		for (const float A : LastAction)
@@ -194,6 +444,9 @@ void UOrangeRobotEnvComponent::ResetEnv()
 {
 	CurrentStep = 0;
 	LastAction.Empty();
+
+	CacheJointActionAxes();
+	LogDriveConstraintStates();
 
 	if (!RobotActor) return;
 
