@@ -1,0 +1,6 @@
+{
+  "training_id": "training_003",
+  "start_time": "2026-04-06 13:44:59",
+  "total_timesteps": 1000000,
+  "algorithm": "SAC"
+}
