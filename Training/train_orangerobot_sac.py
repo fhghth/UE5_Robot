@@ -7,7 +7,7 @@ import json
 import torch
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback
-
+from schola.core.protocols.base import AutoResetType
 from schola.core.protocols.protobuf.gRPC import gRPCProtocol
 from schola.core.simulators.unreal.editor import UnrealEditor
 from schola.sb3.env import VecEnv
@@ -78,7 +78,12 @@ def get_next_training_id(output_dir: Path) -> str:
 
 def make_env(verbosity: int = 1) -> VecEnv:
     simulator = UnrealEditor()
-    protocol = gRPCProtocol(url="localhost", port=50051, environment_start_timeout=180)
+    protocol = gRPCProtocol(
+        url="localhost",
+        port=50051,
+        environment_start_timeout=180,
+    )
+    # protocol.send_startup_msg(auto_reset_type=AutoResetType.SAME_STEP)
     return VecEnv(simulator, protocol, verbosity=verbosity)
 
 
