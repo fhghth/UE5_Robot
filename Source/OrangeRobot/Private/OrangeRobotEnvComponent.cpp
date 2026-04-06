@@ -172,15 +172,28 @@ int32 UOrangeRobotEnvComponent::GetActionDim() const
 
 void UOrangeRobotEnvComponent::CaptureInitialTransform()
 {
-	if (RobotActor)
-	{
-		InitialRobotTransform = RobotActor->GetActorTransform();
-	}
+    if (RobotActor)
+    {
+        InitialRobotTransform = RobotActor->GetActorTransform();
+    }
 
-	CacheJointActionAxes();
-	LogDriveConstraintStates();
+    // 保存每个 BodyLink 的初始世界变换
+    InitialBodyLinkTransforms.Empty();
+    for (UStaticMeshComponent* Link : BodyLinks)
+    {
+        if (Link)
+        {
+            InitialBodyLinkTransforms.Add(Link->GetComponentTransform());
+        }
+        else
+        {
+            InitialBodyLinkTransforms.Add(FTransform::Identity);
+        }
+    }
+
+    CacheJointActionAxes();
+    LogDriveConstraintStates();
 }
-
 void UOrangeRobotEnvComponent::LogDriveConstraintStates() const
 {
 	UE_LOG(LogTemp, Warning, TEXT("========== OrangeRobot Drive Constraint Debug =========="));
@@ -403,8 +416,10 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 	// 2. 存活奖励
 	Reward += AliveReward;
 
+	const bool bFallen = CheckFallen();
+
 	// 3. 摔倒惩罚（若已摔倒则扣分，终止由 CheckFallen 负责）
-	if (CheckFallen())
+	if (bFallen)
 	{
 		Reward -= FallPenalty;
 	}
@@ -420,6 +435,17 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 		Reward -= SmoothPenalty * ActionSmoothPenaltyScale;
 	}
 
+	const bool bTruncated = CurrentStep >= MaxSteps;
+	UE_LOG(
+		LogTemp,
+		Warning,
+		TEXT("Step End Debug | Reward=%f | Terminated=%s | Truncated=%s | CurrentStep=%d | MaxSteps=%d"),
+		Reward,
+		bFallen ? TEXT("true") : TEXT("false"),
+		bTruncated ? TEXT("true") : TEXT("false"),
+		CurrentStep,
+		MaxSteps);
+
 	return Reward;
 }
 
@@ -429,11 +455,16 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 
 bool UOrangeRobotEnvComponent::CheckFallen() const
 {
-	if (!RobotActor) return false;
-
-	const FRotator Rot = RobotActor->GetActorRotation();
-	const float Tilt = FMath::Abs(Rot.Pitch) + FMath::Abs(Rot.Roll);
-	return Tilt > FallTiltThreshold;
+    USceneComponent* TiltComp = TiltCheckComponent ? TiltCheckComponent : (BodyLinks.Num() > 0 ? BodyLinks[0] : nullptr);
+    if (TiltComp)
+    {
+        const FVector Up = TiltComp->GetUpVector();
+        const float UprightDot = FVector::DotProduct(Up, FVector::UpVector);
+        const bool bFallen = UprightDot < 0.5f;  // 与竖直方向夹角 > 60° 视为摔倒
+        UE_LOG(LogTemp, Warning, TEXT("CheckFallen: UprightDot=%f, bFallen=%s"), UprightDot, bFallen ? TEXT("true") : TEXT("false"));
+        return bFallen;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -442,33 +473,46 @@ bool UOrangeRobotEnvComponent::CheckFallen() const
 
 void UOrangeRobotEnvComponent::ResetEnv()
 {
-	CurrentStep = 0;
-	LastAction.Empty();
+    UE_LOG(LogTemp, Error, TEXT("======= ResetEnv CALLED! ======="));
+    CurrentStep = 0;
+    LastAction.Empty();
 
-	CacheJointActionAxes();
-	LogDriveConstraintStates();
+    if (!RobotActor)
+    {
+        UE_LOG(LogTemp, Error, TEXT("ResetEnv aborted: RobotActor is nullptr"));
+        return;
+    }
 
-	if (!RobotActor) return;
+    // 1. 恢复根 Actor 的位置与旋转
+    RobotActor->SetActorTransform(InitialRobotTransform, false, nullptr, ETeleportType::ResetPhysics);
 
-	// 1. 恢复根 Actor 的位置与旋转
-	RobotActor->SetActorTransform(InitialRobotTransform, false, nullptr, ETeleportType::ResetPhysics);
+    // 2. 恢复每个 BodyLink 的世界变换（确保多刚体链回到初始姿态）
+    for (int32 i = 0; i < BodyLinks.Num(); ++i)
+    {
+        UStaticMeshComponent* Link = BodyLinks[i];
+        if (Link && InitialBodyLinkTransforms.IsValidIndex(i))
+        {
+            // 使用 Teleport 标志强制重置物理状态
+            Link->SetWorldTransform(InitialBodyLinkTransforms[i], false, nullptr, ETeleportType::ResetPhysics);
+            UE_LOG(LogTemp, Warning, TEXT("ResetEnv Link[%d] %s restored to initial transform"), i, *Link->GetName());
+        }
+    }
 
-	// 2. 清零所有关节角速度目标
-	for (UPhysicsConstraintComponent* Constraint : DriveConstraints)
-	{
-		if (Constraint)
-		{
-			Constraint->SetAngularVelocityTarget(FVector::ZeroVector);
-		}
-	}
+    // 3. 清零所有关节角速度目标
+    for (UPhysicsConstraintComponent* Constraint : DriveConstraints)
+    {
+        if (Constraint) Constraint->SetAngularVelocityTarget(FVector::ZeroVector);
+    }
 
-	// 3. 清零所有连杆的线速度与角速度
-	for (UStaticMeshComponent* Link : BodyLinks)
-	{
-		if (Link && Link->IsSimulatingPhysics())
-		{
-			Link->SetPhysicsLinearVelocity(FVector::ZeroVector);
-			Link->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
-		}
-	}
+    // 4. 清零所有连杆的线速度与角速度（确保物理完全静止）
+    for (UStaticMeshComponent* Link : BodyLinks)
+    {
+        if (Link && Link->IsSimulatingPhysics())
+        {
+            Link->SetPhysicsLinearVelocity(FVector::ZeroVector);
+            Link->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+        }
+    }
+
+    UE_LOG(LogTemp, Warning, TEXT("ResetEnv completed."));
 }
