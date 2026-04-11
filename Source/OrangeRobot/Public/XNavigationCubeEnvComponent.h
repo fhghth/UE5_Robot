@@ -15,13 +15,17 @@ class ORANGEROBOT_API UXNavigationCubeEnvComponent : public UActorComponent
 public:
 	UXNavigationCubeEnvComponent();
 
+	static constexpr int32 NumRays = 8;
+
 protected:
 	virtual void BeginPlay() override;
+
+	TArray<FVector> RayDirections;
 
 public:
 	/** 参与导航训练的立方体组件，可直接引用 BP_TargetCube 中的 Start */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
-	USceneComponent* CubeComponent = nullptr;
+	UPrimitiveComponent* CubeComponent = nullptr;
 
 	/** 导航目标组件，可直接引用 BP_TargetCube 中的 End */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
@@ -43,6 +47,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training")
 	float MaxObserveDistance = 2000.0f;
 
+	/** 是否绘制射线调试可视化 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Debug")
+	bool bDebugDrawRays = false;
+
+	/** 射线调试线显示时长，0 表示仅显示一帧 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Debug", meta = (ClampMin = "0.0"))
+	float DebugRayDuration = 0.0f;
+
 	/** 最大步数，供蓝图判断 Truncated */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training")
 	int32 MaxSteps = 500;
@@ -55,7 +67,11 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
 	float PreviousDistance = 0.0f;
 
-	/** 观测维度：目标相对自身局部方向(3) + 距离(1) */
+	/** 当前步是否发生碰撞 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	bool bHasCollided = false;
+
+	/** 观测维度：目标相对自身局部方向(3) + 距离(1) + 射线(8) */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
 	int32 GetObservationDim() const;
 
@@ -70,6 +86,10 @@ public:
 	/** 恢复到初始位置并清零步数 */
 	UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
 	void ResetEnv();
+
+	/** 执行 8 向射线检测并返回归一化距离 */
+	UFUNCTION(BlueprintCallable, Category = "Schola|Sensor")
+	TArray<float> PerformRaycasts() const;
 
 	/**
 	 * 收集观测：目标相对立方体的局部方向(3) + 世界距离(1)
