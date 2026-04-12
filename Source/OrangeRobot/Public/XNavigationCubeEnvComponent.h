@@ -4,6 +4,7 @@
 
 #include "CoreMinimal.h"
 #include "Components/ActorComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "XNavigationCubeEnvComponent.generated.h"
 
@@ -21,6 +22,10 @@ protected:
 	virtual void BeginPlay() override;
 
 	TArray<FVector> RayDirections;
+	float GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const;
+	float GetTargetDirectionClearance() const;
+	float GetClearanceAtAngleOffset(float AngleOffsetDegrees) const;
+	float ComputeRayOpeningReward(const TArray<float>& CurrentRays, const FVector& MoveDirectionLocal);
 
 public:
 	/** 参与导航训练的立方体组件，可直接引用 BP_TargetCube 中的 Start */
@@ -47,6 +52,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training")
 	float MaxObserveDistance = 2000.0f;
 
+	/** 目标方向两侧辅助观测射线的偏转角度，帮助学习绕过拐角 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training", meta = (ClampMin = "0.0", ClampMax = "89.0"))
+	float TargetSideClearanceAngleDegrees = 30.0f;
+
 	/** 是否绘制射线调试可视化 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Debug")
 	bool bDebugDrawRays = false;
@@ -59,6 +68,62 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training")
 	int32 MaxSteps = 500;
 
+	/** 距离缩短奖励缩放 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float DistanceRewardScale = 0.12f;
+
+	/** 每执行一步的时间成本，抑制无意义徘徊 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float StepPenalty = 0.02f;
+
+	/** 发生碰撞时的惩罚 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float CollisionPenalty = 1.5f;
+
+	/** 单步位移小于该阈值时视为停滞 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward", meta = (ClampMin = "0.0"))
+	float StuckDistanceThreshold = 1.0f;
+
+	/** 停滞惩罚，避免贴墙卡住 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float StuckPenalty = 0.2f;
+
+	/** 连续停滞时每步额外增加的惩罚系数 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward", meta = (ClampMin = "0.0"))
+	float StuckPenaltyRamp = 0.05f;
+
+	/** 连续停滞达到该阈值后可判定为截断，避免无效回合 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training", meta = (ClampMin = "1"))
+	int32 MaxConsecutiveStuckSteps = 25;
+
+	/** 单步距离改善低于该阈值时视为目标距离停滞 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward", meta = (ClampMin = "0.0"))
+	float DistanceStuckThreshold = 2.0f;
+
+	/** 连续多少步目标距离停滞后开始施加惩罚 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward", meta = (ClampMin = "1"))
+	int32 MaxDistanceStuckSteps = 12;
+
+	/** 目标距离停滞时的基础惩罚 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float DistanceStuckPenalty = 0.15f;
+
+	/** 射线距离增量超过该阈值时视为方向突然打开 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward", meta = (ClampMin = "0.0"))
+	float RayOpeningThreshold = 0.18f;
+
+	/** 某方向突然打开时给予的探索奖励 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float RaySuddenOpeningReward = 0.06f;
+
+	/** 目标方向通路变开阔时的奖励缩放，鼓励绕障 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float ClearanceRewardScale = 0.2f;
+
+	/** 到达目标的终点奖励 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Reward")
+	float ReachTargetReward = 10.0f;
+
 	/** 当前回合已执行步数 */
 	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
 	int32 CurrentStep = 0;
@@ -67,11 +132,35 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
 	float PreviousDistance = 0.0f;
 
+	/** 上一步位置，用于判定是否贴墙停滞 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	FVector PreviousCubeLocation = FVector::ZeroVector;
+
+	/** 上一步目标方向上的射线通路余量，用于鼓励绕过障碍 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	float PreviousTargetDirectionClearance = 0.0f;
+
+	/** 连续停滞步数，用于更强地惩罚贴墙不动 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	int32 ConsecutiveStuckSteps = 0;
+
+	/** 连续多少步没有明显接近目标 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	int32 ConsecutiveDistanceStuckSteps = 0;
+
+	/** 上一步 8 向射线结果，用于检测某方向是否突然打开 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	TArray<float> PreviousRayResults;
+
+	/** 上一步动作在局部平面上的移动方向，用于将探索奖励限制为动作对齐方向 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	FVector PreviousMoveDirectionLocal = FVector::ZeroVector;
+
 	/** 当前步是否发生碰撞 */
 	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
 	bool bHasCollided = false;
 
-	/** 观测维度：目标相对自身局部方向(3) + 距离(1) + 射线(8) */
+	/** 观测维度：目标相对自身局部方向(3) + 距离(1) + 射线(8) + 目标对齐开阔度(3) */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
 	int32 GetObservationDim() const;
 
@@ -106,6 +195,10 @@ public:
 	/** 距离缩短奖励：靠近目标给正奖励，抵达目标给额外奖励 */
 	UFUNCTION(BlueprintCallable, Category = "Schola|Step")
 	float ComputeReward();
+
+	/** 是否因连续停滞而建议提前截断当前回合 */
+	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Step")
+	bool CheckShouldTruncateForStuck() const;
 
 	/** 是否抵达目标 */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Step")

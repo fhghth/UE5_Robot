@@ -79,7 +79,7 @@ void UXNavigationCubeEnvComponent::BeginPlay()
 
 int32 UXNavigationCubeEnvComponent::GetObservationDim() const
 {
-	return 4 + NumRays;
+	return 4 + NumRays + 3;
 }
 
 int32 UXNavigationCubeEnvComponent::GetActionDim() const
@@ -110,11 +110,21 @@ void UXNavigationCubeEnvComponent::CaptureInitialTransform()
 	if (CubeComponent && TargetComponent)
 	{
 		PreviousDistance = FVector::Dist(CubeComponent->GetComponentLocation(), TargetComponent->GetComponentLocation());
+		PreviousCubeLocation = CubeComponent->GetComponentLocation();
+		PreviousTargetDirectionClearance = GetTargetDirectionClearance();
+		ConsecutiveDistanceStuckSteps = 0;
+		PreviousRayResults = PerformRaycasts();
+		PreviousMoveDirectionLocal = FVector::ZeroVector;
 		UE_LOG(LogTemp, Warning, TEXT("[NavigationEnv] Initial distance to target = %.2f"), PreviousDistance);
 	}
 	else
 	{
 		PreviousDistance = 0.0f;
+		PreviousCubeLocation = FVector::ZeroVector;
+		PreviousTargetDirectionClearance = 0.0f;
+		ConsecutiveDistanceStuckSteps = 0;
+		PreviousRayResults.Reset();
+		PreviousMoveDirectionLocal = FVector::ZeroVector;
 	}
 }
 
@@ -123,6 +133,12 @@ void UXNavigationCubeEnvComponent::ResetEnv()
 	UE_LOG(LogTemp, Warning, TEXT("[NavigationEnv] ResetEnv called"));
 	CurrentStep = 0;
 	bHasCollided = false;
+	PreviousCubeLocation = FVector::ZeroVector;
+	PreviousTargetDirectionClearance = 0.0f;
+	ConsecutiveStuckSteps = 0;
+	ConsecutiveDistanceStuckSteps = 0;
+	PreviousRayResults.Reset();
+	PreviousMoveDirectionLocal = FVector::ZeroVector;
 
 	if (!CubeComponent)
 	{
@@ -133,6 +149,12 @@ void UXNavigationCubeEnvComponent::ResetEnv()
 
 	CubeComponent->SetWorldTransform(InitialCubeTransform, false, nullptr, ETeleportType::ResetPhysics);
 	PreviousDistance = TargetComponent ? FVector::Dist(CubeComponent->GetComponentLocation(), TargetComponent->GetComponentLocation()) : 0.0f;
+	PreviousCubeLocation = CubeComponent->GetComponentLocation();
+	PreviousTargetDirectionClearance = (CubeComponent && TargetComponent) ? GetTargetDirectionClearance() : 0.0f;
+	ConsecutiveStuckSteps = 0;
+	ConsecutiveDistanceStuckSteps = 0;
+	PreviousRayResults = PerformRaycasts();
+	PreviousMoveDirectionLocal = FVector::ZeroVector;
 	UE_LOG(
 		LogTemp,
 		Warning,
@@ -210,7 +232,116 @@ TArray<float> UXNavigationCubeEnvComponent::CollectObservations() const
 	Observations.Add(DirectionLocal.Z);
 	Observations.Add(FMath::Clamp(Distance / MaxObserveDistance, 0.0f, 1.0f));
 	Observations.Append(PerformRaycasts());
+	Observations.Add(GetTargetDirectionClearance());
+	Observations.Add(GetClearanceAtAngleOffset(TargetSideClearanceAngleDegrees));
+	Observations.Add(GetClearanceAtAngleOffset(-TargetSideClearanceAngleDegrees));
 	return Observations;
+}
+
+float UXNavigationCubeEnvComponent::GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const
+{
+	if (!CubeComponent || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	const FVector Start = CubeComponent->GetComponentLocation();
+	const FVector Direction = WorldDirection.GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		return 0.0f;
+	}
+
+	const float EffectiveDistance = FMath::Max(TraceDistance, 1.0f);
+
+	FCollisionQueryParams QueryParams;
+	QueryParams.AddIgnoredComponent(CubeComponent);
+
+	FHitResult Hit;
+	const bool bHit = GetWorld()->LineTraceSingleByChannel(
+		Hit,
+		Start,
+		Start + Direction * EffectiveDistance,
+		ECC_WorldStatic,
+		QueryParams);
+
+	const float Clearance = bHit ? Hit.Distance : EffectiveDistance;
+	return FMath::Clamp(Clearance / EffectiveDistance, 0.0f, 1.0f);
+}
+
+float UXNavigationCubeEnvComponent::GetTargetDirectionClearance() const
+{
+	if (!CubeComponent || !TargetComponent || !GetWorld())
+	{
+		return 0.0f;
+	}
+
+	const FVector Start = CubeComponent->GetComponentLocation();
+	const FVector ToTarget = TargetComponent->GetComponentLocation() - Start;
+	const float TargetDistance = ToTarget.Size();
+	if (TargetDistance <= KINDA_SMALL_NUMBER)
+	{
+		return 1.0f;
+	}
+
+	return GetDirectionalClearance(ToTarget, TargetDistance);
+}
+
+float UXNavigationCubeEnvComponent::GetClearanceAtAngleOffset(float AngleOffsetDegrees) const
+{
+	if (!CubeComponent || !TargetComponent)
+	{
+		return 0.0f;
+	}
+
+	const FVector Start = CubeComponent->GetComponentLocation();
+	const FVector ToTarget = TargetComponent->GetComponentLocation() - Start;
+	const float TraceDistance = ToTarget.Size();
+	if (TraceDistance <= KINDA_SMALL_NUMBER)
+	{
+		return 1.0f;
+	}
+
+	const FVector LocalTargetDirection = CubeComponent->GetComponentTransform().InverseTransformVectorNoScale(ToTarget.GetSafeNormal());
+	const FVector RotatedLocalDirection = FRotator(0.0f, AngleOffsetDegrees, 0.0f).RotateVector(LocalTargetDirection).GetSafeNormal();
+	const FVector WorldDirection = CubeComponent->GetComponentTransform().TransformVectorNoScale(RotatedLocalDirection);
+	return GetDirectionalClearance(WorldDirection, TraceDistance);
+}
+
+float UXNavigationCubeEnvComponent::ComputeRayOpeningReward(const TArray<float>& CurrentRays, const FVector& MoveDirectionLocal)
+{
+	if (PreviousRayResults.Num() != CurrentRays.Num())
+	{
+		PreviousRayResults = CurrentRays;
+		return 0.0f;
+	}
+
+	const FVector MoveDirection2D = FVector(MoveDirectionLocal.X, MoveDirectionLocal.Y, 0.0f).GetSafeNormal();
+	if (MoveDirection2D.IsNearlyZero())
+	{
+		PreviousRayResults = CurrentRays;
+		return 0.0f;
+	}
+
+	float TotalReward = 0.0f;
+	for (int32 i = 0; i < CurrentRays.Num(); ++i)
+	{
+		const float Delta = CurrentRays[i] - PreviousRayResults[i];
+		if (Delta <= RayOpeningThreshold)
+		{
+			continue;
+		}
+
+		const FVector RayDirection2D = FVector(RayDirections[i].X, RayDirections[i].Y, 0.0f).GetSafeNormal();
+		const float Alignment = FVector::DotProduct(MoveDirection2D, RayDirection2D);
+		if (Alignment > 0.707f)
+		{
+			TotalReward += RaySuddenOpeningReward * Alignment;
+		}
+	}
+
+	PreviousRayResults = CurrentRays;
+	return TotalReward;
 }
 
 void UXNavigationCubeEnvComponent::ApplyAction(const TArray<float>& Action)
@@ -230,6 +361,7 @@ void UXNavigationCubeEnvComponent::ApplyAction(const TArray<float>& Action)
 
 	const float ForwardValue = Action.IsValidIndex(0) ? FMath::Clamp(Action[0], -1.0f, 1.0f) : 0.0f;
 	const float RightValue = Action.IsValidIndex(1) ? FMath::Clamp(Action[1], -1.0f, 1.0f) : 0.0f;
+	PreviousMoveDirectionLocal = FVector(ForwardValue, RightValue, 0.0f).GetClampedToMaxSize(1.0f);
 	UE_LOG(LogTemp, Warning, TEXT("[ApplyAction] Action=(%.2f, %.2f) | MoveStepScale=%.2f"), ForwardValue, RightValue, MoveStepScale);
 
 	const FVector MoveWorld = (CubeComponent->GetForwardVector() * ForwardValue +
@@ -238,6 +370,8 @@ void UXNavigationCubeEnvComponent::ApplyAction(const TArray<float>& Action)
 	if (MoveWorld.IsNearlyZero())
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[ApplyAction] MoveWorld is nearly zero, skipping movement."));
+		PreviousMoveDirectionLocal = FVector::ZeroVector;
+		bHasCollided = false;
 		CurrentStep++;
 		return;
 	}
@@ -324,24 +458,78 @@ float UXNavigationCubeEnvComponent::ComputeReward()
 	if (!CubeComponent || !TargetComponent)
 	{
 		PreviousDistance = 0.0f;
+		PreviousCubeLocation = FVector::ZeroVector;
+		PreviousTargetDirectionClearance = 0.0f;
+		ConsecutiveStuckSteps = 0;
+		ConsecutiveDistanceStuckSteps = 0;
+		PreviousRayResults.Reset();
+		PreviousMoveDirectionLocal = FVector::ZeroVector;
 		return 0.0f;
 	}
 
-	const float CurrentDistance = FVector::Dist(CubeComponent->GetComponentLocation(), TargetComponent->GetComponentLocation());
-	float Reward = (PreviousDistance - CurrentDistance) * 0.1f;
+	const FVector CurrentLocation = CubeComponent->GetComponentLocation();
+	const float CurrentDistance = FVector::Dist(CurrentLocation, TargetComponent->GetComponentLocation());
+	const float DistanceImprovement = PreviousDistance - CurrentDistance;
+	const float CurrentClearance = GetTargetDirectionClearance();
+	const float MovedDistance = PreviousCubeLocation.IsZero() ? 0.0f : FVector::Dist(CurrentLocation, PreviousCubeLocation);
+	const bool bIsStuck = MovedDistance < StuckDistanceThreshold;
+	const TArray<float> CurrentRays = PerformRaycasts();
+
+	if (bIsStuck)
+	{
+		ConsecutiveStuckSteps++;
+	}
+	else
+	{
+		ConsecutiveStuckSteps = 0;
+	}
+
+	if (DistanceImprovement < DistanceStuckThreshold && !bHasCollided)
+	{
+		ConsecutiveDistanceStuckSteps++;
+	}
+	else
+	{
+		ConsecutiveDistanceStuckSteps = 0;
+	}
+
+	float Reward = 0.0f;
+	Reward += DistanceImprovement * DistanceRewardScale;
+	Reward -= StepPenalty;
+
+	if (bIsStuck)
+	{
+		Reward -= StuckPenalty + StuckPenaltyRamp * FMath::Max(0, ConsecutiveStuckSteps - 1);
+	}
+
+	if (ConsecutiveDistanceStuckSteps >= MaxDistanceStuckSteps)
+	{
+		const float DistanceStuckPenaltyScale = 1.0f + 0.1f * (ConsecutiveDistanceStuckSteps - MaxDistanceStuckSteps);
+		Reward -= DistanceStuckPenalty * DistanceStuckPenaltyScale;
+	}
+
+	Reward += (CurrentClearance - PreviousTargetDirectionClearance) * ClearanceRewardScale;
+	Reward += ComputeRayOpeningReward(CurrentRays, PreviousMoveDirectionLocal);
 
 	if (CurrentDistance <= ReachTargetDistance)
 	{
-		Reward += 10.0f;
+		Reward += ReachTargetReward;
 	}
 
 	if (bHasCollided)
 	{
-		Reward -= 5.0f;
+		Reward -= CollisionPenalty;
 	}
 
 	PreviousDistance = CurrentDistance;
+	PreviousCubeLocation = CurrentLocation;
+	PreviousTargetDirectionClearance = CurrentClearance;
 	return Reward;
+}
+
+bool UXNavigationCubeEnvComponent::CheckShouldTruncateForStuck() const
+{
+	return ConsecutiveStuckSteps >= MaxConsecutiveStuckSteps;
 }
 
 bool UXNavigationCubeEnvComponent::CheckReachedTarget() const
