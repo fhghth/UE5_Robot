@@ -1,0 +1,9 @@
+{
+  "training_id": "training_001",
+  "start_time": "2026-04-13 11:20:42",
+  "total_timesteps": 300000,
+  "algorithm": "SAC",
+  "environment": "NavigationCube",
+  "observation_dim": 4,
+  "action_dim": 2
+}
