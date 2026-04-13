@@ -82,7 +82,8 @@ def main() -> None:
     global _model, _env, _output_dir, _training_id, _start_time
 
     total_timesteps = 300_000
-    base_output_dir = Path("Training") / "NavigationCube"
+    project_root = Path(__file__).resolve().parent.parent
+    base_output_dir = project_root / "Training" / "Navigation"
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     _training_id = get_next_training_id(base_output_dir)
@@ -152,7 +153,10 @@ def main() -> None:
             ent_coef="auto",
             target_update_interval=1,
             target_entropy="auto",
+            # ent_coef=0.2,
+            # target_entropy=-2.0,
             device=device,
+            tensorboard_log=str(_output_dir / "tensorboard"),
         )
         _model = model
 

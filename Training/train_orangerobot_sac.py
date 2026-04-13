@@ -91,7 +91,8 @@ def main() -> None:
     global _model, _env, _output_dir, _training_id, _start_time
 
     total_timesteps = 1_000_000
-    base_output_dir = Path("Training")
+    project_root = Path(__file__).resolve().parent.parent
+    base_output_dir = project_root / "Training" / "Robot"
     base_output_dir.mkdir(parents=True, exist_ok=True)
 
     # 创建本次训练的唯一目录
