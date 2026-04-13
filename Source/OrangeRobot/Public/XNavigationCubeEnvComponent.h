@@ -22,6 +22,8 @@ protected:
 	virtual void BeginPlay() override;
 
 	TArray<FVector> RayDirections;
+	FCollisionShape GetPerceptionShape() const;
+	float SweepClearance(const FVector& Start, const FVector& WorldDirection, float TraceDistance) const;
 	float GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const;
 	float GetTargetDirectionClearance() const;
 	float GetClearanceAtAngleOffset(float AngleOffsetDegrees) const;
@@ -51,6 +53,14 @@ public:
 	/** 距离观测归一化上限 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training")
 	float MaxObserveDistance = 2000.0f;
+
+	/** 感知用半宽，用于体积 Sweep，为立方体留出安全余量 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Perception", meta = (ClampMin = "0.0"))
+	float PerceptionHalfExtent = 30.0f;
+
+	/** 是否使用盒体扫描；关闭后退化为球体扫描 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Perception")
+	bool bUseBoxSweep = true;
 
 	/** 目标方向两侧辅助观测射线的偏转角度，帮助学习绕过拐角 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Training", meta = (ClampMin = "0.0", ClampMax = "89.0"))
@@ -160,7 +170,11 @@ public:
 	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
 	bool bHasCollided = false;
 
-	/** 观测维度：目标相对自身局部方向(3) + 距离(1) + 射线(8) + 目标对齐开阔度(3) */
+	/** 当前动作方向的一步前瞻安全余量 */
+	UPROPERTY(BlueprintReadOnly, Category = "Navigation|Training")
+	float PreviousActionSafety = 1.0f;
+
+	/** 观测维度：目标相对自身局部方向(3) + 距离(1) + 射线(8) + 目标对齐开阔度(3) + 动作前瞻安全余量(1) */
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
 	int32 GetObservationDim() const;
 
