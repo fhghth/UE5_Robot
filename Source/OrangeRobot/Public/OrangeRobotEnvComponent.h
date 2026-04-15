@@ -7,6 +7,7 @@
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "PhysicsEngine/ConstraintInstanceBlueprintLibrary.h"
 #include "Components/StaticMeshComponent.h"
+#include "Engine/EngineTypes.h"
 #include "OrangeRobotEnvComponent.generated.h"
 
 USTRUCT(BlueprintType)
@@ -72,6 +73,10 @@ public:
     /*机器人静态网格躯干，用于检测摔倒*/
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     USceneComponent* TiltCheckComponent = nullptr;
+
+    /** 头部组件，用于检测头部是否接近地面；若为空则回退到躯干倾斜检测 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
+    USceneComponent* HeadComponent = nullptr;
     
     /** 机器人初始 BodyLink Transform（Reset 时恢复用）
      * 调用 CaptureInitialTransform() 后自动填充，也可在蓝图中手动覆盖
@@ -108,6 +113,38 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     FTransform InitialRobotTransform;
 
+    /** 导航目标 Actor，用于构造 navigation 16 维观测 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    AActor* NavigationTargetActor = nullptr;
+
+    /** 导航观测的参考组件，若为空则回退到 RobotActor 根坐标系 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    USceneComponent* NavigationReferenceComponent = nullptr;
+
+    /** 导航体积感知的 Sweep 半尺寸 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    FVector NavigationPerceptionHalfExtent = FVector(18.0f, 18.0f, 18.0f);
+
+    /** 目标距离归一化使用的最大观测距离 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    float NavigationMaxObserveDistance = 2000.0f;
+
+    /** 侧向开阔度角度，需与 navigation_029 保持一致 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    float TargetSideClearanceAngleDegrees = 30.0f;
+
+    /** 动作前瞻安全余量使用的前瞻距离 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    float NavigationActionLookaheadDistance = 120.0f;
+
+    /** Sweep 检测通道 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    TEnumAsByte<ECollisionChannel> NavigationSweepChannel = ECC_WorldStatic;
+
+    /** 是否在总观测末尾追加 navigation 16 维观测 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
+    bool bAppendNavigationObservation = false;
+
     // -----------------------------------------------------------------------
     // 训练超参数（可在蓝图细节面板中调整）
     // -----------------------------------------------------------------------
@@ -124,9 +161,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float AliveReward = 0.02f;
 
-    /** 躯干倾斜超过此角度（度）视为摔倒并终止剧集 */
+    /** 躯干倾斜超过此角度（度）视为摔倒并终止剧集；当未配置 HeadComponent 时使用 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float FallTiltThreshold = 45.0f;
+
+    /** 头部世界 Z 坐标低于此阈值时视为摔倒 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float HeadGroundHeightThreshold = 30.0f;
 
     /** 摔倒惩罚值 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
@@ -135,6 +176,54 @@ public:
     /** 动作平滑惩罚系数（抑制关节抖振，对相邻帧动作差值施加惩罚） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float ActionSmoothPenaltyScale = 0.005f;
+
+    /** 关节角速度目标缩放系数（将归一化动作 [-1,1] 映射到 °/s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float JointVelocityScale = 90.0f;
+
+    /** 动作死区，小幅动作直接视为 0，减轻抖振 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float ActionDeadzone = 0.05f;
+
+    /** 归一化动作的非线性软映射指数；大于 1 时会压低中高幅动作，减轻爆冲 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float ActionResponseExponent = 2.0f;
+
+    /** Twist 角速度目标硬上限（度/秒） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float TwistVelocityLimit = 45.0f;
+
+    /** Swing1 / Swing2 角速度目标硬上限（度/秒） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float SwingVelocityLimit = 35.0f;
+
+    /** 前进奖励使用的速度裁剪上限（cm/s），防止用爆冲刷奖励 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float MaxForwardRewardSpeed = 120.0f;
+
+    /** 站立直立奖励系数，鼓励身体保持竖直 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float UprightRewardScale = 0.2f;
+
+    /** 脚部向下探测距离，用于判断是否接近地面支撑 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float FootSupportTraceDistance = 12.0f;
+
+    /** 脚部线速度低于此阈值（cm/s）时，可视为稳定支撑脚 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float FootStableSpeedThreshold = 35.0f;
+
+    /** 身体世界 Z 坐标低于此阈值时，认为机体已塌陷 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float BodyHeightThreshold = 45.0f;
+
+    /** 身体高度奖励归一化上限（大于该高度后按满额计算） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float BodyHeightRewardMax = 90.0f;
+
+    /** 横向漂移惩罚系数，抑制左右乱晃 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float LateralVelocityPenaltyScale = 0.02f;
 
     // -----------------------------------------------------------------------
     // 状态读取（只读，供蓝图监控）
@@ -149,10 +238,17 @@ public:
     // -----------------------------------------------------------------------
 
     /**
-     * 返回观测向量维度
+     * 返回低层观测向量维度
      * 构成：根位置(3) + 根旋转(3) + 根线速度(3) + 根角速度(3)
      *      + 每个约束 [Twist角度, Swing1角度, Swing2角度, X角速度, Y角速度, Z角速度]
      * 即：12 + DriveConstraints.Num() * 6
+     */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
+    int32 GetLowLevelObservationDim() const;
+
+    /**
+     * 返回总观测向量维度
+     * = 低层观测维度 + (bAppendNavigationObservation ? 16 : 0)
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetObservationDim() const;
@@ -177,12 +273,15 @@ public:
     void ApplyAction(const TArray<float>& Action);
 
     /**
-     * 收集当前帧观测向量，长度等于 GetObservationDim()
-     * 当前每个约束固定输出 6 个值：Twist/Swing1/Swing2 角度 + X/Y/Z 角速度
-     * 将返回值封装为 FBoxPoint 后填入 OutAgentState.Observations
+     * 收集当前帧总观测向量，长度等于 GetObservationDim()
+     * 默认仅包含低层观测；若启用 bAppendNavigationObservation，则在末尾追加 navigation16
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
     TArray<float> CollectObservations() const;
+
+    /** 收集当前帧低层观测向量，不包含 navigation16 */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Robot|LowLevel")
+    TArray<float> CollectLowLevelObservations() const;
 
     /**
      * 计算当前步奖励
@@ -193,7 +292,7 @@ public:
 
     /**
      * 判断是否摔倒（终止条件 bTerminated）
-     * 躯干 Pitch 或 Roll 超过 FallTiltThreshold 即返回 true
+     * 优先使用头部高度阈值检测；若未配置 HeadComponent，则回退到躯干倾斜检测
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Step")
     bool CheckFallen() const;
@@ -224,6 +323,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Robot|Debug")
     void LogDriveConstraintStates() const;
 
+    /** 只收集与 navigation_029 对齐的 16 维导航观测 */
+    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Robot|Navigation")
+    TArray<float> CollectNavigationObservations() const;
+
+    /** 打印当前 navigation16 维观测，便于与立方体环境对比 */
+    UFUNCTION(BlueprintCallable, Category = "Robot|Navigation")
+    void LogNavigationObservations() const;
+
+
     /** 当前每个约束缓存出的可控动作轴数量 */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
     TArray<int32> JointActionAxes;
@@ -236,7 +344,24 @@ private:
 
     void CacheJointActionAxes();
     FOrangeRobotConstraintAxisCache BuildConstraintAxisCache(UPhysicsConstraintComponent* Constraint) const;
+    static float ShapeNormalizedAction(float Value, float Exponent);
+    static float SanitizeFiniteScalar(float Value, float MinValue, float MaxValue);
+    static FVector SanitizeFiniteVector(const FVector& Value, float MinValue, float MaxValue);
+    FVector ClampAngularVelocityTarget(const FVector& TargetVel) const;
+    FVector GetNavigationOrigin() const;
+    FTransform GetNavigationReferenceTransform() const;
+    float GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const;
+    void AppendNavigationObservations(TArray<float>& Obs) const;
+    USceneComponent* GetTiltReferenceComponent() const;
+    float GetUprightDot() const;
+    float GetBodyHeight() const;
+    bool IsFootTouchingGround(const UPrimitiveComponent* FootComponent) const;
+    bool IsFootStableSupport(const UPrimitiveComponent* FootComponent) const;
+    bool HasStableFootSupport() const;
 
     /** 上一帧动作缓存，用于动作平滑惩罚计算 */
     TArray<float> LastAction;
+
+    /** 上上一帧动作缓存，用于计算相邻帧动作变化惩罚 */
+    TArray<float> PreviousAction;
 };

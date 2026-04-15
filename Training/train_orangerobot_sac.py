@@ -156,18 +156,27 @@ def main() -> None:
             policy="MlpPolicy",
             env=env,
             verbose=1,
-            learning_rate=3e-4,
-            buffer_size=500_000,
-            learning_starts=10_000,
+            policy_kwargs=dict(
+                net_arch=dict(
+                    pi=[512, 512, 256],  # 策略网络：三层
+                    qf=[512, 512, 256]  # Q 网络：三层
+                )
+            ),
+            learning_rate=1e-4,
+            buffer_size=1_000_000,
+            learning_starts=20_000,
             batch_size=batch_size,
             tau=0.005,
             gamma=0.99,
             train_freq=1,
             gradient_steps=1,
             ent_coef="auto",
+            # ent_coef=0.005,
             target_update_interval=1,
-            target_entropy="auto",
-            device=device,  # 关键：指定训练设备
+            # target_entropy="auto",
+            target_entropy=-16,
+            device=device,
+            tensorboard_log=str(_output_dir / "tensorboard"),
         )
         _model = model
 

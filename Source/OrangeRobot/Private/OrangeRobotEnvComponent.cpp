@@ -2,10 +2,8 @@
 
 #include "OrangeRobotEnvComponent.h"
 #include "PhysicsEngine/ConstraintInstance.h"
-
-// 关节角速度目标缩放系数（将归一化动作 [-1,1] 映射到物理单位 °/s）
-// 可根据实际调试结果在蓝图中替换为 UPROPERTY，此处作为内部常量
-static constexpr float JointVelocityScale = 180.0f;
+#include "Engine/World.h"
+#include "DrawDebugHelpers.h"
 
 namespace
 {
@@ -57,6 +55,45 @@ namespace
 		Swing1Motion = ConstraintInstance.GetAngularSwing1Motion();
 		Swing2Motion = ConstraintInstance.GetAngularSwing2Motion();
 	}
+
+	FVector GetRotatedYawDirection(const FTransform& ReferenceTransform, float YawDegrees)
+	{
+		const FVector Forward = ReferenceTransform.GetUnitAxis(EAxis::X);
+		return Forward.RotateAngleAxis(YawDegrees, FVector::UpVector).GetSafeNormal();
+	}
+}
+
+float UOrangeRobotEnvComponent::ShapeNormalizedAction(float Value, float Exponent)
+{
+	const float ClampedValue = FMath::Clamp(Value, -1.0f, 1.0f);
+	const float SafeExponent = FMath::Max(Exponent, 1.0f);
+	return FMath::Sign(ClampedValue) * FMath::Pow(FMath::Abs(ClampedValue), SafeExponent);
+}
+
+float UOrangeRobotEnvComponent::SanitizeFiniteScalar(float Value, float MinValue, float MaxValue)
+{
+	if (!FMath::IsFinite(Value))
+	{
+		return 0.0f;
+	}
+
+	return FMath::Clamp(Value, MinValue, MaxValue);
+}
+
+FVector UOrangeRobotEnvComponent::SanitizeFiniteVector(const FVector& Value, float MinValue, float MaxValue)
+{
+	return FVector(
+		SanitizeFiniteScalar(Value.X, MinValue, MaxValue),
+		SanitizeFiniteScalar(Value.Y, MinValue, MaxValue),
+		SanitizeFiniteScalar(Value.Z, MinValue, MaxValue));
+}
+
+FVector UOrangeRobotEnvComponent::ClampAngularVelocityTarget(const FVector& TargetVel) const
+{
+	return FVector(
+		SanitizeFiniteScalar(TargetVel.X, -TwistVelocityLimit, TwistVelocityLimit),
+		SanitizeFiniteScalar(TargetVel.Y, -SwingVelocityLimit, SwingVelocityLimit),
+		SanitizeFiniteScalar(TargetVel.Z, -SwingVelocityLimit, SwingVelocityLimit));
 }
 
 UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
@@ -149,11 +186,220 @@ void UOrangeRobotEnvComponent::CacheJointActionAxes()
 // 空间维度查询
 // ---------------------------------------------------------------------------
 
-int32 UOrangeRobotEnvComponent::GetObservationDim() const
+int32 UOrangeRobotEnvComponent::GetLowLevelObservationDim() const
 {
 	// 根状态：位置(3) + 旋转(3) + 线速度(3) + 角速度(3) = 12
 	// 每个驱动关节：Twist / Swing1 / Swing2 各自的角度与角速度，共 6
 	return 12 + DriveConstraints.Num() * 6;
+}
+
+int32 UOrangeRobotEnvComponent::GetObservationDim() const
+{
+	return GetLowLevelObservationDim() + (bAppendNavigationObservation ? 16 : 0);
+}
+
+FVector UOrangeRobotEnvComponent::GetNavigationOrigin() const
+{
+	if (NavigationReferenceComponent)
+	{
+		return NavigationReferenceComponent->GetComponentLocation();
+	}
+
+	return RobotActor ? RobotActor->GetActorLocation() : FVector::ZeroVector;
+}
+
+FTransform UOrangeRobotEnvComponent::GetNavigationReferenceTransform() const
+{
+	if (NavigationReferenceComponent)
+	{
+		return NavigationReferenceComponent->GetComponentTransform();
+	}
+
+	return RobotActor ? RobotActor->GetActorTransform() : FTransform::Identity;
+}
+
+float UOrangeRobotEnvComponent::GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const
+{
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return 1.0f;
+	}
+
+	const FVector Start = GetNavigationOrigin();
+	const FVector Direction = WorldDirection.GetSafeNormal();
+	if (Direction.IsNearlyZero())
+	{
+		return 1.0f;
+	}
+
+	const float ClampedDistance = FMath::Max(TraceDistance, 1.0f);
+	const FVector End = Start + Direction * ClampedDistance;
+
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(NavigationSweep), false, RobotActor);
+	FCollisionShape CollisionShape = FCollisionShape::MakeBox(NavigationPerceptionHalfExtent);
+	FHitResult HitResult;
+
+	const bool bHit = World->SweepSingleByChannel(
+		HitResult,
+		Start,
+		End,
+		FQuat::Identity,
+		NavigationSweepChannel,
+		CollisionShape,
+		QueryParams);
+
+	if (!bHit)
+	{
+		return 1.0f;
+	}
+
+	const float HitDistance = FMath::Max(HitResult.Distance, 0.0f);
+	return FMath::Clamp(HitDistance / ClampedDistance, 0.0f, 1.0f);
+}
+
+TArray<float> UOrangeRobotEnvComponent::CollectNavigationObservations() const
+{
+	TArray<float> Obs;
+	Obs.Reserve(16);
+
+	const FTransform ReferenceTransform = GetNavigationReferenceTransform();
+	const FVector Origin = GetNavigationOrigin();
+	const FVector TargetLocation = NavigationTargetActor ? NavigationTargetActor->GetActorLocation() : Origin;
+	const FVector ToTargetWorld = TargetLocation - Origin;
+	const FVector DirectionLocal = ReferenceTransform.InverseTransformVectorNoScale(ToTargetWorld.GetSafeNormal());
+	const float Distance = ToTargetWorld.Size();
+	const float NormalizedDistance = NavigationMaxObserveDistance > KINDA_SMALL_NUMBER
+		? FMath::Clamp(Distance / NavigationMaxObserveDistance, 0.0f, 1.0f)
+		: 0.0f;
+
+	Obs.Add(DirectionLocal.X);
+	Obs.Add(DirectionLocal.Y);
+	Obs.Add(DirectionLocal.Z);
+	Obs.Add(NormalizedDistance);
+
+	for (int32 RayIndex = 0; RayIndex < 8; ++RayIndex)
+	{
+		const float YawDegrees = RayIndex * 45.0f;
+		const FVector SweepDirection = GetRotatedYawDirection(ReferenceTransform, YawDegrees);
+		Obs.Add(GetDirectionalClearance(SweepDirection, NavigationMaxObserveDistance));
+	}
+
+	const FVector TargetDirectionWorld = ToTargetWorld.GetSafeNormal();
+	const float TargetYawDegrees = !TargetDirectionWorld.IsNearlyZero()
+		? FMath::RadiansToDegrees(FMath::Atan2(DirectionLocal.Y, DirectionLocal.X))
+		: 0.0f;
+	const float TargetTraceDistance = FMath::Clamp(Distance, 100.0f, NavigationMaxObserveDistance);
+	Obs.Add(GetDirectionalClearance(TargetDirectionWorld, TargetTraceDistance));
+	Obs.Add(GetDirectionalClearance(
+		GetRotatedYawDirection(ReferenceTransform, TargetYawDegrees + TargetSideClearanceAngleDegrees),
+		TargetTraceDistance));
+	Obs.Add(GetDirectionalClearance(
+		GetRotatedYawDirection(ReferenceTransform, TargetYawDegrees - TargetSideClearanceAngleDegrees),
+		TargetTraceDistance));
+
+	FVector ActionDirectionWorld = ReferenceTransform.GetUnitAxis(EAxis::X);
+	if (LastAction.Num() >= 2)
+	{
+		const FVector Forward = ReferenceTransform.GetUnitAxis(EAxis::X);
+		const FVector Right = ReferenceTransform.GetUnitAxis(EAxis::Y);
+		ActionDirectionWorld = (Forward * LastAction[0] + Right * LastAction[1]).GetSafeNormal();
+		if (ActionDirectionWorld.IsNearlyZero())
+		{
+			ActionDirectionWorld = Forward;
+		}
+	}
+	Obs.Add(GetDirectionalClearance(ActionDirectionWorld, NavigationActionLookaheadDistance));
+
+	return Obs;
+}
+
+void UOrangeRobotEnvComponent::AppendNavigationObservations(TArray<float>& Obs) const
+{
+	const TArray<float> NavigationObs = CollectNavigationObservations();
+	Obs.Append(NavigationObs);
+}
+
+USceneComponent* UOrangeRobotEnvComponent::GetTiltReferenceComponent() const
+{
+	return TiltCheckComponent ? TiltCheckComponent : (BodyLinks.Num() > 0 ? BodyLinks[0] : nullptr);
+}
+
+float UOrangeRobotEnvComponent::GetUprightDot() const
+{
+	const USceneComponent* TiltComp = GetTiltReferenceComponent();
+	const FVector Up = TiltComp ? TiltComp->GetUpVector() : FVector::UpVector;
+	return FVector::DotProduct(Up, FVector::UpVector);
+}
+
+float UOrangeRobotEnvComponent::GetBodyHeight() const
+{
+	const USceneComponent* BodyComp = GetTiltReferenceComponent();
+	if (BodyComp)
+	{
+		return BodyComp->GetComponentLocation().Z;
+	}
+
+	return RobotActor ? RobotActor->GetActorLocation().Z : 0.0f;
+}
+
+bool UOrangeRobotEnvComponent::IsFootTouchingGround(const UPrimitiveComponent* FootComponent) const
+{
+	if (!FootComponent)
+	{
+		return false;
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return false;
+	}
+
+	const FVector Start = FootComponent->GetComponentLocation();
+	const FVector End = Start - FVector(0.0f, 0.0f, FMath::Max(FootSupportTraceDistance, 1.0f));
+	FCollisionQueryParams QueryParams(SCENE_QUERY_STAT(FootSupportTrace), false, RobotActor);
+	QueryParams.AddIgnoredComponent(FootComponent);
+	FHitResult HitResult;
+
+	return World->LineTraceSingleByChannel(
+		HitResult,
+		Start,
+		End,
+		ECC_WorldStatic,
+		QueryParams);
+}
+
+bool UOrangeRobotEnvComponent::IsFootStableSupport(const UPrimitiveComponent* FootComponent) const
+{
+	if (!FootComponent)
+	{
+		return false;
+	}
+
+	if (!IsFootTouchingGround(FootComponent))
+	{
+		return false;
+	}
+
+	const FVector FootVelocity = FootComponent->GetComponentVelocity();
+	return FootVelocity.Size() <= FootStableSpeedThreshold;
+}
+
+bool UOrangeRobotEnvComponent::HasStableFootSupport() const
+{
+	return IsFootStableSupport(FootL) || IsFootStableSupport(FootR);
+}
+
+void UOrangeRobotEnvComponent::LogNavigationObservations() const
+{
+	const TArray<float> NavigationObs = CollectNavigationObservations();
+	FString Joined;
+	for (int32 Index = 0; Index < NavigationObs.Num(); ++Index)
+	{
+		Joined += FString::Printf(TEXT("[%d]=%.4f "), Index, NavigationObs[Index]);
+	}
+	UE_LOG(LogTemp, Warning, TEXT("Navigation16: %s"), *Joined);
 }
 
 int32 UOrangeRobotEnvComponent::GetActionDim() const
@@ -257,18 +503,29 @@ void UOrangeRobotEnvComponent::LogDriveConstraintStates() const
 
 void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 {
-	UE_LOG(LogTemp, Warning, TEXT("ApplyAction received, Action.Num() = %d, ExpectedActionDim = %d"), Action.Num(), GetActionDim());
-	for (int32 i = 0; i < Action.Num(); ++i)
+	if (!RobotActor)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("Action[%d] = %f"), i, Action[i]);
+		return;
 	}
-
-	if (!RobotActor) return;
 
 	if (JointActionAxes.Num() != DriveConstraints.Num() || JointAxisCaches.Num() != DriveConstraints.Num())
 	{
 		CacheJointActionAxes();
 	}
+
+	const int32 ExpectedActionDim = GetActionDim();
+	if (Action.Num() != ExpectedActionDim)
+	{
+		UE_LOG(
+			LogTemp,
+			Warning,
+			TEXT("ApplyAction received mismatched action length. Action.Num()=%d ExpectedActionDim=%d"),
+			Action.Num(),
+			ExpectedActionDim);
+	}
+
+	TArray<float> CurrentAction;
+	CurrentAction.Init(0.0f, ExpectedActionDim);
 
 	int32 ActionIndex = 0;
 	for (int32 JointIndex = 0; JointIndex < DriveConstraints.Num(); ++JointIndex)
@@ -282,50 +539,50 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 		const FOrangeRobotConstraintAxisCache& AxisCache = JointAxisCaches[JointIndex];
 		FVector TargetVel = FVector::ZeroVector;
 
+		auto ConsumeAction = [&](double& OutTargetVel, float AxisVelocityLimit)
+		{
+			if (!CurrentAction.IsValidIndex(ActionIndex))
+			{
+				++ActionIndex;
+				return;
+			}
+
+			float Value = Action.IsValidIndex(ActionIndex) ? FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) : 0.0f;
+			if (FMath::Abs(Value) < ActionDeadzone)
+			{
+				Value = 0.0f;
+			}
+			else
+			{
+				Value = ShapeNormalizedAction(Value, ActionResponseExponent);
+			}
+
+			CurrentAction[ActionIndex] = Value;
+			const float TargetAxisVel = Value * JointVelocityScale;
+			OutTargetVel = SanitizeFiniteScalar(TargetAxisVel, -AxisVelocityLimit, AxisVelocityLimit);
+			++ActionIndex;
+		};
+
 		if (AxisCache.bUseTwist)
 		{
-			if (Action.IsValidIndex(ActionIndex))
-			{
-				TargetVel.X = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
-			}
-			++ActionIndex;
+			ConsumeAction(TargetVel.X, TwistVelocityLimit);
 		}
 
 		if (AxisCache.bUseSwing1)
 		{
-			if (Action.IsValidIndex(ActionIndex))
-			{
-				TargetVel.Y = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
-			}
-			++ActionIndex;
+			ConsumeAction(TargetVel.Y, SwingVelocityLimit);
 		}
 
 		if (AxisCache.bUseSwing2)
 		{
-			if (Action.IsValidIndex(ActionIndex))
-			{
-				TargetVel.Z = FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) * JointVelocityScale;
-			}
-			++ActionIndex;
+			ConsumeAction(TargetVel.Z, SwingVelocityLimit);
 		}
 
-		Constraint->SetAngularVelocityTarget(TargetVel);
-
-		UE_LOG(
-			LogTemp,
-			Warning,
-			TEXT("ApplyAction -> Joint[%d] %s | TargetVel=(%f, %f, %f) | EnabledAxes[X=%s,Y=%s,Z=%s]"),
-			JointIndex,
-			*Constraint->GetName(),
-			TargetVel.X,
-			TargetVel.Y,
-			TargetVel.Z,
-			AxisCache.bUseTwist ? TEXT("true") : TEXT("false"),
-			AxisCache.bUseSwing1 ? TEXT("true") : TEXT("false"),
-			AxisCache.bUseSwing2 ? TEXT("true") : TEXT("false"));
+		Constraint->SetAngularVelocityTarget(ClampAngularVelocityTarget(TargetVel));
 	}
 
-	LastAction = Action;
+	PreviousAction = LastAction;
+	LastAction = MoveTemp(CurrentAction);
 	CurrentStep++;
 }
 
@@ -333,27 +590,27 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
 // Step：收集观测
 // ---------------------------------------------------------------------------
 
-TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
+TArray<float> UOrangeRobotEnvComponent::CollectLowLevelObservations() const
 {
 	TArray<float> Obs;
-	Obs.Reserve(GetObservationDim());
+	Obs.Reserve(GetLowLevelObservationDim());
 
 	if (!RobotActor) return Obs;
 
 	// 1. 根 Actor 位置（世界空间，cm）
-	const FVector Location = RobotActor->GetActorLocation();
+	const FVector Location = SanitizeFiniteVector(RobotActor->GetActorLocation(), -100000.0f, 100000.0f);
 	Obs.Add(Location.X);
 	Obs.Add(Location.Y);
 	Obs.Add(Location.Z);
 
 	// 2. 根 Actor 旋转（度）
 	const FRotator Rotation = RobotActor->GetActorRotation();
-	Obs.Add(Rotation.Pitch);
-	Obs.Add(Rotation.Roll);
-	Obs.Add(Rotation.Yaw);
+	Obs.Add(SanitizeFiniteScalar(Rotation.Pitch, -180.0f, 180.0f));
+	Obs.Add(SanitizeFiniteScalar(Rotation.Roll, -180.0f, 180.0f));
+	Obs.Add(SanitizeFiniteScalar(Rotation.Yaw, -180.0f, 180.0f));
 
 	// 3. 根 Actor 线速度（cm/s）
-	const FVector LinVel = RobotActor->GetVelocity();
+	const FVector LinVel = SanitizeFiniteVector(RobotActor->GetVelocity(), -5000.0f, 5000.0f);
 	Obs.Add(LinVel.X);
 	Obs.Add(LinVel.Y);
 	Obs.Add(LinVel.Z);
@@ -363,7 +620,7 @@ TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
 	FVector RootAngVel = FVector::ZeroVector;
 	if (BodyLinks.Num() > 0 && BodyLinks[0])
 	{
-		RootAngVel = BodyLinks[0]->GetPhysicsAngularVelocityInRadians();
+		RootAngVel = SanitizeFiniteVector(BodyLinks[0]->GetPhysicsAngularVelocityInRadians(), -100.0f, 100.0f);
 	}
 	Obs.Add(RootAngVel.X);
 	Obs.Add(RootAngVel.Y);
@@ -378,9 +635,9 @@ TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
 		float Swing2Angle = 0.0f;
 		if (DriveConstraints[i])
 		{
-			TwistAngle = DriveConstraints[i]->GetCurrentTwist();
-			Swing1Angle = DriveConstraints[i]->GetCurrentSwing1();
-			Swing2Angle = DriveConstraints[i]->GetCurrentSwing2();
+			TwistAngle = SanitizeFiniteScalar(DriveConstraints[i]->GetCurrentTwist(), -180.0f, 180.0f);
+			Swing1Angle = SanitizeFiniteScalar(DriveConstraints[i]->GetCurrentSwing1(), -180.0f, 180.0f);
+			Swing2Angle = SanitizeFiniteScalar(DriveConstraints[i]->GetCurrentSwing2(), -180.0f, 180.0f);
 		}
 		Obs.Add(TwistAngle);
 		Obs.Add(Swing1Angle);
@@ -389,11 +646,24 @@ TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
 		FVector AngularVelocity = FVector::ZeroVector;
 		if (BodyLinks.IsValidIndex(i) && BodyLinks[i])
 		{
-			AngularVelocity = BodyLinks[i]->GetPhysicsAngularVelocityInRadians();
+			AngularVelocity = SanitizeFiniteVector(BodyLinks[i]->GetPhysicsAngularVelocityInRadians(), -100.0f, 100.0f);
 		}
 		Obs.Add(AngularVelocity.X);
 		Obs.Add(AngularVelocity.Y);
 		Obs.Add(AngularVelocity.Z);
+	}
+
+	return Obs;
+}
+
+TArray<float> UOrangeRobotEnvComponent::CollectObservations() const
+{
+	TArray<float> Obs = CollectLowLevelObservations();
+	Obs.Reserve(GetObservationDim());
+
+	if (bAppendNavigationObservation)
+	{
+		AppendNavigationObservations(Obs);
 	}
 
 	return Obs;
@@ -409,28 +679,35 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 
 	float Reward = 0.0f;
 
-	// 1. 向前行走奖励（世界 X 轴正方向线速度）
-	const float ForwardVel = RobotActor->GetVelocity().X;
-	Reward += ForwardVel * ForwardRewardScale;
+	const float UprightDot = GetUprightDot();
+	const bool bHasStableSupport = HasStableFootSupport();
+	const float BodyHeight = GetBodyHeight();
+	const float BodyHeightFactor = BodyHeightRewardMax > KINDA_SMALL_NUMBER
+		? FMath::Clamp(BodyHeight / BodyHeightRewardMax, 0.0f, 1.0f)
+		: 0.0f;
+	const float SupportFactor = bHasStableSupport ? 1.0f : 0.0f;
+	const float UprightFactor = FMath::Max(0.0f, UprightDot) * SupportFactor * BodyHeightFactor;
 
-	// 2. 存活奖励
+	const FVector Velocity = RobotActor->GetVelocity();
+	const float ForwardVel = FMath::Clamp(Velocity.X, -MaxForwardRewardSpeed, MaxForwardRewardSpeed);
+	Reward += ForwardVel * ForwardRewardScale;
 	Reward += AliveReward;
+	Reward += UprightFactor * UprightRewardScale;
+	Reward -= FMath::Abs(Velocity.Y) * LateralVelocityPenaltyScale;
 
 	const bool bFallen = CheckFallen();
-
-	// 3. 摔倒惩罚（若已摔倒则扣分，终止由 CheckFallen 负责）
 	if (bFallen)
 	{
 		Reward -= FallPenalty;
 	}
 
-	// 4. 动作平滑惩罚（抑制抖振）
-	if (LastAction.Num() == GetActionDim())
+	if (LastAction.Num() == GetActionDim() && PreviousAction.Num() == LastAction.Num())
 	{
 		float SmoothPenalty = 0.0f;
-		for (const float A : LastAction)
+		for (int32 Index = 0; Index < LastAction.Num(); ++Index)
 		{
-			SmoothPenalty += A * A;
+			const float Delta = LastAction[Index] - PreviousAction[Index];
+			SmoothPenalty += Delta * Delta;
 		}
 		Reward -= SmoothPenalty * ActionSmoothPenaltyScale;
 	}
@@ -438,9 +715,15 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 	const bool bTruncated = CurrentStep >= MaxSteps;
 	UE_LOG(
 		LogTemp,
-		Warning,
-		TEXT("Step End Debug | Reward=%f | Terminated=%s | Truncated=%s | CurrentStep=%d | MaxSteps=%d"),
+		Verbose,
+		TEXT("Step End Debug | Reward=%f | UprightDot=%f | UprightFactor=%f | HasStableSupport=%s | BodyHeight=%f | ForwardVel=%f | LateralVel=%f | Terminated=%s | Truncated=%s | CurrentStep=%d | MaxSteps=%d"),
 		Reward,
+		UprightDot,
+		UprightFactor,
+		bHasStableSupport ? TEXT("true") : TEXT("false"),
+		BodyHeight,
+		Velocity.X,
+		Velocity.Y,
 		bFallen ? TEXT("true") : TEXT("false"),
 		bTruncated ? TEXT("true") : TEXT("false"),
 		CurrentStep,
@@ -455,16 +738,42 @@ float UOrangeRobotEnvComponent::ComputeReward() const
 
 bool UOrangeRobotEnvComponent::CheckFallen() const
 {
-    USceneComponent* TiltComp = TiltCheckComponent ? TiltCheckComponent : (BodyLinks.Num() > 0 ? BodyLinks[0] : nullptr);
-    if (TiltComp)
-    {
-        const FVector Up = TiltComp->GetUpVector();
-        const float UprightDot = FVector::DotProduct(Up, FVector::UpVector);
-        const bool bFallen = UprightDot < 0.5f;  // 与竖直方向夹角 > 60° 视为摔倒
-        UE_LOG(LogTemp, Warning, TEXT("CheckFallen: UprightDot=%f, bFallen=%s"), UprightDot, bFallen ? TEXT("true") : TEXT("false"));
-        return bFallen;
-    }
-    return false;
+	if (HeadComponent)
+	{
+		const double HeadHeight = HeadComponent->GetComponentLocation().Z;
+		const bool bHeadHitGround = HeadHeight < HeadGroundHeightThreshold;
+		if (bHeadHitGround)
+		{
+			UE_LOG(
+				LogTemp,
+				Verbose,
+				TEXT("CheckFallen (Head): HeadHeight=%f, Threshold=%f, bFallen=true"),
+				HeadHeight,
+				HeadGroundHeightThreshold);
+			return true;
+		}
+	}
+
+	const float BodyHeight = GetBodyHeight();
+	const bool bHasStableSupport = HasStableFootSupport();
+	const float UprightDot = GetUprightDot();
+	const float UprightDotThreshold = FMath::Cos(FMath::DegreesToRadians(FallTiltThreshold));
+	const bool bBodyCollapsed = BodyHeight < BodyHeightThreshold;
+	const bool bTiltedWithoutSupport = UprightDot < UprightDotThreshold && !bHasStableSupport;
+	const bool bFallen = bBodyCollapsed || bTiltedWithoutSupport;
+	UE_LOG(
+		LogTemp,
+		Verbose,
+		TEXT("CheckFallen: BodyHeight=%f, BodyThreshold=%f, UprightDot=%f, UprightThreshold=%f, HasStableSupport=%s, bBodyCollapsed=%s, bTiltedWithoutSupport=%s, bFallen=%s"),
+		BodyHeight,
+		BodyHeightThreshold,
+		UprightDot,
+		UprightDotThreshold,
+		bHasStableSupport ? TEXT("true") : TEXT("false"),
+		bBodyCollapsed ? TEXT("true") : TEXT("false"),
+		bTiltedWithoutSupport ? TEXT("true") : TEXT("false"),
+		bFallen ? TEXT("true") : TEXT("false"));
+	return bFallen;
 }
 
 // ---------------------------------------------------------------------------
@@ -473,9 +782,10 @@ bool UOrangeRobotEnvComponent::CheckFallen() const
 
 void UOrangeRobotEnvComponent::ResetEnv()
 {
-    UE_LOG(LogTemp, Error, TEXT("======= ResetEnv CALLED! ======="));
+    UE_LOG(LogTemp, Warning, TEXT("======= ResetEnv CALLED! ======="));
     CurrentStep = 0;
     LastAction.Empty();
+    PreviousAction.Empty();
 
     if (!RobotActor)
     {
@@ -483,36 +793,40 @@ void UOrangeRobotEnvComponent::ResetEnv()
         return;
     }
 
-    // 1. 恢复根 Actor 的位置与旋转
+    if (JointActionAxes.Num() != DriveConstraints.Num() || JointAxisCaches.Num() != DriveConstraints.Num())
+    {
+        CacheJointActionAxes();
+    }
+
     RobotActor->SetActorTransform(InitialRobotTransform, false, nullptr, ETeleportType::ResetPhysics);
 
-    // 2. 恢复每个 BodyLink 的世界变换（确保多刚体链回到初始姿态）
     for (int32 i = 0; i < BodyLinks.Num(); ++i)
     {
         UStaticMeshComponent* Link = BodyLinks[i];
         if (Link && InitialBodyLinkTransforms.IsValidIndex(i))
         {
-            // 使用 Teleport 标志强制重置物理状态
             Link->SetWorldTransform(InitialBodyLinkTransforms[i], false, nullptr, ETeleportType::ResetPhysics);
-            UE_LOG(LogTemp, Warning, TEXT("ResetEnv Link[%d] %s restored to initial transform"), i, *Link->GetName());
         }
     }
 
-    // 3. 清零所有关节角速度目标
-    for (UPhysicsConstraintComponent* Constraint : DriveConstraints)
-    {
-        if (Constraint) Constraint->SetAngularVelocityTarget(FVector::ZeroVector);
-    }
-
-    // 4. 清零所有连杆的线速度与角速度（确保物理完全静止）
     for (UStaticMeshComponent* Link : BodyLinks)
     {
         if (Link && Link->IsSimulatingPhysics())
         {
             Link->SetPhysicsLinearVelocity(FVector::ZeroVector);
             Link->SetPhysicsAngularVelocityInRadians(FVector::ZeroVector);
+            Link->WakeAllRigidBodies();
+        }
+    }
+
+    for (UPhysicsConstraintComponent* Constraint : DriveConstraints)
+    {
+        if (Constraint)
+        {
+            Constraint->SetAngularVelocityTarget(FVector::ZeroVector);
         }
     }
 
     UE_LOG(LogTemp, Warning, TEXT("ResetEnv completed."));
 }
+
