@@ -9,10 +9,20 @@ public class OrangeRobot : ModuleRules
 		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
 	
 		PublicDependencyModuleNames.AddRange(new string[] {
-			"Core", "CoreUObject", "Engine", "InputCore", "EnhancedInput",
+			"Core", 
+			"CoreUObject", 
+			"Engine", 
+			"InputCore", 
+			"EnhancedInput",
 			// 物理约束组件所需
-			"PhysicsCore"
-		});
+			"PhysicsCore", 
+			"Schola", 
+			"ScholaNNE", 
+			"ScholaInferenceUtils",
+			"NNEOnnxruntime",
+			"NNE"
+			
+        });
 
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			// StaticMeshComponent 等渲染/物理组件
