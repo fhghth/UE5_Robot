@@ -8,6 +8,7 @@
 #include "PhysicsEngine/ConstraintInstanceBlueprintLibrary.h"
 #include "Components/StaticMeshComponent.h"
 #include "Engine/EngineTypes.h"
+#include "Agent/AgentInterface.h"
 #include "OrangeRobotEnvComponent.generated.h"
 
 USTRUCT(BlueprintType)
@@ -54,13 +55,16 @@ struct FOrangeRobotConstraintAxisCache
  *   5. 在蓝图 BeginPlay 或 InitializeEnvironment 中调用 CaptureInitialTransform()
  */
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
-class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent
+class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent, public IAgent
 {
 	GENERATED_BODY()
 
 public:
 
 	UOrangeRobotEnvComponent();
+
+	/** 每帧绘制高层命令对应的期望前进/转向方向（仅编辑器下绘制） */
+	virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     // -----------------------------------------------------------------------
     // 蓝图可配置属性
@@ -113,37 +117,13 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     FTransform InitialRobotTransform;
 
-    /** 导航目标 Actor，用于构造 navigation 16 维观测 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    AActor* NavigationTargetActor = nullptr;
+    /** 是否将高层命令 [CmdForward, CmdTurn] 追加到观测末尾 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    bool bEnableHighLevelCommand = false;
 
-    /** 导航观测的参考组件，若为空则回退到 RobotActor 根坐标系 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    USceneComponent* NavigationReferenceComponent = nullptr;
-
-    /** 导航体积感知的 Sweep 半尺寸 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    FVector NavigationPerceptionHalfExtent = FVector(18.0f, 18.0f, 18.0f);
-
-    /** 目标距离归一化使用的最大观测距离 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    float NavigationMaxObserveDistance = 2000.0f;
-
-    /** 侧向开阔度角度，需与 navigation_029 保持一致 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    float TargetSideClearanceAngleDegrees = 30.0f;
-
-    /** 动作前瞻安全余量使用的前瞻距离 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    float NavigationActionLookaheadDistance = 120.0f;
-
-    /** Sweep 检测通道 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    TEnumAsByte<ECollisionChannel> NavigationSweepChannel = ECC_WorldStatic;
-
-    /** 是否在总观测末尾追加 navigation 16 维观测 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Navigation")
-    bool bAppendNavigationObservation = false;
+    /** 当前高层命令；X=CmdForward，Y=CmdTurn */
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Schola|Hierarchical")
+    FVector2D HighLevelCommand = FVector2D::ZeroVector;
 
     // -----------------------------------------------------------------------
     // 训练超参数（可在蓝图细节面板中调整）
@@ -153,9 +133,33 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     int32 MaxSteps = 2000;
 
-    /** 向前行走奖励系数（沿世界 X 轴正方向速度） */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float ForwardRewardScale = 0.15f;
+    /** 是否在每个 episode 重置时随机采样固定高层命令 [CmdForward, CmdTurn] */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    bool bSampleHighLevelCommandOnReset = true;
+
+    /** 高层前进命令映射到的最大局部前向速度（cm/s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float MaxForwardSpeed = 200.0f;
+
+    /** 高层转向命令映射到的最大偏航角速度（deg/s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float MaxTurnSpeedDegPerSec = 90.0f;
+
+    /** 命令匹配基础奖励值（每步最大） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float CommandMatchBaseReward = 0.5f;
+
+    /** 前进命令匹配在总命令奖励中的权重 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float ForwardCommandRewardWeight = 0.7f;
+
+    /** 转向命令匹配在总命令奖励中的权重 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float TurnCommandRewardWeight = 0.3f;
+
+    /** 是否启用命令匹配奖励（可用于课程控制） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    bool bEnableCommandReward = false;
 
     /** 每步存活奖励（鼓励保持站立） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
@@ -197,10 +201,6 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float SwingVelocityLimit = 35.0f;
 
-    /** 前进奖励使用的速度裁剪上限（cm/s），防止用爆冲刷奖励 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float MaxForwardRewardSpeed = 120.0f;
-
     /** 站立直立奖励系数，鼓励身体保持竖直 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float UprightRewardScale = 0.2f;
@@ -221,9 +221,65 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float BodyHeightRewardMax = 90.0f;
 
+    /** 躯干高度观测归一化基准值（cm） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float TrunkHeightNormalization = 100.0f;
+
     /** 横向漂移惩罚系数，抑制左右乱晃 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float LateralVelocityPenaltyScale = 0.02f;
+
+    /** 双脚均不稳定时的惩罚系数，抑制腾空或无支撑状态 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float UnstableSupportPenaltyScale = 0.12f;
+
+    /** 双脚同时高速摆动惩罚系数，抑制双脚高频乱抖 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float DualFootShufflePenaltyScale = 0.0012f;
+
+    /** 单脚支撑时，躯干水平投影偏离支撑中心的惩罚系数 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float TrunkSupportOffsetPenaltyScale = 0.003f;
+
+    /** 躯干水平投影偏移归一化距离（cm） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float TrunkSupportOffsetNormalizeDistance = 25.0f;
+
+    /** 第一阶段动态平衡过渡开关：启用后优先鼓励稳定支撑与小步纠偏 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    bool bEnableDynamicBalanceReward = true;
+
+    /** 双脚同时稳定支撑时的奖励值 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float DoubleSupportRewardScale = 0.15f;
+
+    /** 无条件前进速度奖励系数（鼓励产生向前的速度） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float ForwardVelocityUnconditionalRewardScale = 0.03f;
+
+    /** 前进速度奖励的归一化上限（cm/s） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float ForwardSpeedRewardMax = 150.0f;
+
+     /** 
+     * 单脚支撑时，摆动脚必须至少抬起的高度（cm）。
+     * 基于初始站立姿态计算实际抬起量，避免模型通过倾斜躯干作弊。
+     */
+     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+     float SwingFootMinHeight = 8.0f;
+ 
+
+    /** 摆动脚高度过低的惩罚系数（超出阈值的平方惩罚） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float SwingFootHeightPenaltyScale = 0.01f;
+
+    /** 单脚支撑额外奖励（前进中+直立+摆动合规时激活） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float SingleSupportBonusReward = 0.1f;
+
+    /** Reset 时是否对关节施加小幅随机角速度扰动，增强策略鲁棒性 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    bool bApplyRandomJointOffsetsOnReset = false;
 
     // -----------------------------------------------------------------------
     // 状态读取（只读，供蓝图监控）
@@ -239,17 +295,14 @@ public:
 
     /**
      * 返回低层观测向量维度
-     * 构成：根位置(3) + 根旋转(3) + 根线速度(3) + 根角速度(3)
-     *      + 每个约束 [Twist角度, Swing1角度, Swing2角度, X角速度, Y角速度, Z角速度]
-     * 即：12 + DriveConstraints.Num() * 6
+     * 构成：躯干高度(1) + 局部线速度(3) + 局部角速度(3) + 重力投影(1) + 足部触地(2)
+     *      + 每个约束 [归一化 Twist角度, 归一化 Swing1角度, 归一化 Swing2角度, 归一化 X角速度, 归一化 Y角速度, 归一化 Z角速度]
+     * 即：10 + DriveConstraints.Num() * 6
      */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetLowLevelObservationDim() const;
 
-    /**
-     * 返回总观测向量维度
-     * = 低层观测维度 + (bAppendNavigationObservation ? 16 : 0)
-     */
+    /** 返回总观测向量维度 = 低层观测维度 + (bEnableHighLevelCommand ? 2 : 0) */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetObservationDim() const;
 
@@ -274,21 +327,29 @@ public:
 
     /**
      * 收集当前帧总观测向量，长度等于 GetObservationDim()
-     * 默认仅包含低层观测；若启用 bAppendNavigationObservation，则在末尾追加 navigation16
+     * 默认包含低层观测；若启用 bEnableHighLevelCommand，则在末尾追加 [CmdForward, CmdTurn]
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
     TArray<float> CollectObservations() const;
 
-    /** 收集当前帧低层观测向量，不包含 navigation16 */
+    /** 收集当前帧低层观测向量，不包含高层命令 */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Robot|LowLevel")
     TArray<float> CollectLowLevelObservations() const;
+
+    /** 仅设置高层命令，不触发推理；供蓝图/C++ 调度器在高层低频更新时调用 */
+    UFUNCTION(BlueprintCallable, Category = "Schola|Hierarchical")
+    void SetHighLevelCommand(FVector2D InHighLevelCommand);
+
+    /** 清零高层命令，通常在 Reset 时调用 */
+    UFUNCTION(BlueprintCallable, Category = "Schola|Hierarchical")
+    void ClearHighLevelCommand();
 
     /**
      * 计算当前步奖励
      * 将返回值填入 OutAgentState.Reward
      */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
-    float ComputeReward() const;
+    float ComputeReward();
 
     /**
      * 判断是否摔倒（终止条件 bTerminated）
@@ -323,15 +384,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Robot|Debug")
     void LogDriveConstraintStates() const;
 
-    /** 只收集与 navigation_029 对齐的 16 维导航观测 */
-    UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Robot|Navigation")
-    TArray<float> CollectNavigationObservations() const;
-
-    /** 打印当前 navigation16 维观测，便于与立方体环境对比 */
-    UFUNCTION(BlueprintCallable, Category = "Robot|Navigation")
-    void LogNavigationObservations() const;
-
-
     /** 当前每个约束缓存出的可控动作轴数量 */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
     TArray<int32> JointActionAxes;
@@ -347,21 +399,44 @@ private:
     static float ShapeNormalizedAction(float Value, float Exponent);
     static float SanitizeFiniteScalar(float Value, float MinValue, float MaxValue);
     static FVector SanitizeFiniteVector(const FVector& Value, float MinValue, float MaxValue);
+    static float SanitizeFiniteAngleDegrees(float Value);
     FVector ClampAngularVelocityTarget(const FVector& TargetVel) const;
-    FVector GetNavigationOrigin() const;
-    FTransform GetNavigationReferenceTransform() const;
-    float GetDirectionalClearance(const FVector& WorldDirection, float TraceDistance) const;
-    void AppendNavigationObservations(TArray<float>& Obs) const;
+    FVector GetSupportCenter(bool bLeftStable, bool bRightStable) const;
+    float GetTrunkSupportOffsetNormalized(bool bLeftStable, bool bRightStable) const;
+    float GetFootHorizontalSpeed(const UPrimitiveComponent* FootComponent) const;
+    /** 获取躯干参考点到指定脚部的垂直距离（TrunkZ - FootZ），单位 cm */
+    float GetFootDistanceFromTrunk(const UPrimitiveComponent* FootComponent) const;
     USceneComponent* GetTiltReferenceComponent() const;
     float GetUprightDot() const;
     float GetBodyHeight() const;
     bool IsFootTouchingGround(const UPrimitiveComponent* FootComponent) const;
     bool IsFootStableSupport(const UPrimitiveComponent* FootComponent) const;
     bool HasStableFootSupport() const;
+    void SampleEpisodeHighLevelCommand();
+    /** 左脚的初始垂直距离（躯干Z - 左脚Z），用于摆动脚高度计算 */
+    float InitialLeftFootDistance = 0.0f;
+
+    /** 右脚的初始垂直距离（躯干Z - 右脚Z） */
+    float InitialRightFootDistance = 0.0f;
+
+#if WITH_EDITOR
+	/** 在机器人位置绘制高层命令调试箭头与圆弧 */
+	void DrawHighLevelCommandDebug() const;
+#endif
 
     /** 上一帧动作缓存，用于动作平滑惩罚计算 */
     TArray<float> LastAction;
 
     /** 上上一帧动作缓存，用于计算相邻帧动作变化惩罚 */
     TArray<float> PreviousAction;
+
+	EAgentStatus AgentStatus = EAgentStatus::Running;
+
+public:
+	// IAgent
+	virtual EAgentStatus GetStatus_Implementation() override;
+	virtual void SetStatus_Implementation(EAgentStatus NewStatus) override;
+	virtual void Define_Implementation(FInteractionDefinition& OutInteractionDefinition) override;
+	virtual void Act_Implementation(const FInstancedStruct& InAction) override;
+	virtual void Observe_Implementation(FInstancedStruct& OutObservations) override;
 };
