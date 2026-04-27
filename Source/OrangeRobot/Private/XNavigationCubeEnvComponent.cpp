@@ -94,9 +94,18 @@ void UXNavigationCubeEnvComponent::BeginPlay()
 		}
 	}
 
-	if (!TargetComponent)
+	if (!TargetComponent && TargetActor)
 	{
-		UE_LOG(LogTemp, Error, TEXT("[NavigationEnv] BeginPlay failed: TargetComponent is null"));
+		 TargetComponent = TargetActor->GetRootComponent();
+                if (TargetComponent)
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("[NavigationEnv] Auto-assigned TargetComponent from TargetActor %s"), *TargetActor->GetName());
+                }
+                else
+                {
+                	UE_LOG(LogTemp, Error, TEXT("[NavigationEnv] BeginPlay failed: TargetComponent TargetActor is null"));
+                }
+		 
 	}
 }
 
