@@ -38,6 +38,10 @@ public:
 	/** 导航目标组件，可直接引用 BP_TargetCube 中的 End */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
 	USceneComponent* TargetComponent = nullptr;
+	
+	/** 目标 Actor（设置后会将其根组件自动赋给 TargetComponent） */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
+	AActor* TargetActor = nullptr;
 
 	/** 立方体初始 Transform，Reset 时恢复 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
