@@ -6,8 +6,9 @@ import json
 
 import torch
 from stable_baselines3 import SAC
-from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
+from stable_baselines3.common.utils import get_linear_fn
+from stable_baselines3.common.vec_env import VecEnv as BaseVecEnv
 from schola.core.protocols.protobuf.gRPC import gRPCProtocol
 from schola.core.simulators.unreal.editor import UnrealEditor
 from schola.sb3.env import VecEnv
@@ -18,6 +19,56 @@ _env = None
 _output_dir = None
 _training_id = None
 _start_time = None
+
+
+class RewardScaledVecEnv(BaseVecEnv):
+    """
+    向量化环境的奖励缩放包装器。
+    将每一步的奖励乘以 scale 系数。
+    """
+    def __init__(self, venv, scale=0.05):
+        self.venv = venv
+        self.scale = scale
+        super().__init__(num_envs=venv.num_envs,
+                         observation_space=venv.observation_space,
+                         action_space=venv.action_space)
+
+    def step_async(self, actions):
+        self.venv.step_async(actions)
+
+    def step_wait(self):
+        obs, rewards, dones, infos = self.venv.step_wait()
+        return obs, rewards * self.scale, dones, infos
+
+    def reset(self):
+        return self.venv.reset()
+
+    def close(self):
+        self.venv.close()
+
+    def env_method(self, *args, **kwargs):
+        return self.venv.env_method(*args, **kwargs)
+
+    def get_attr(self, *args, **kwargs):
+        return self.venv.get_attr(*args, **kwargs)
+
+    def set_attr(self, *args, **kwargs):
+        return self.venv.set_attr(*args, **kwargs)
+
+    def env_is_wrapped(self, *args, **kwargs):
+        return self.venv.env_is_wrapped(*args, **kwargs)
+
+    def seed(self, seed=None):
+        return self.venv.seed(seed)
+
+    def render(self, *args, **kwargs):
+        return self.venv.render(*args, **kwargs)
+
+    def __getattr__(self, name):
+        # 未显式代理的属性一律转发到底层环境
+        if 'venv' in self.__dict__:
+            return getattr(self.venv, name)
+        raise AttributeError(name)
 
 
 class TensorboardMetricsCallback(BaseCallback):
@@ -49,6 +100,23 @@ class TensorboardMetricsCallback(BaseCallback):
             if key in info:
                 return TensorboardMetricsCallback._to_scalar(info[key])
         return None
+
+    def _record_reward_components(self, info: dict) -> None:
+        candidates = info.get("reward_components") or info.get("LastRewardComponents")
+        if isinstance(candidates, dict):
+            for key, value in candidates.items():
+                scalar = self._to_scalar(value)
+                if scalar is not None:
+                    self.logger.record(f"reward_components/{key}", scalar)
+            return
+
+        for key, value in info.items():
+            if not isinstance(key, str):
+                continue
+            if key.startswith("reward/") or key.startswith("reward_components/"):
+                scalar = self._to_scalar(value)
+                if scalar is not None:
+                    self.logger.record(key, scalar)
 
     def _record_window_stats(self, window_size: int = 100) -> None:
         if not self._recent_rewards:
@@ -88,6 +156,7 @@ class TensorboardMetricsCallback(BaseCallback):
             self._episode_reward += reward_scalar
             self._episode_length += 1
             self.logger.record("custom/reward_step", reward_scalar)
+            self._record_reward_components(info)
 
             if done:
                 self._episode_idx += 1
@@ -183,7 +252,6 @@ def signal_handler(sig, frame):
 
 def get_next_training_id(output_dir: Path) -> str:
     """获取下一个可用的训练ID（自动递增）"""
-    # 查找已存在的训练文件夹
     training_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
     training_nums = []
 
@@ -245,21 +313,18 @@ def prompt_training_mode(base_output_dir: Path) -> tuple[str, Path | None]:
 def main() -> None:
     global _model, _env, _output_dir, _training_id, _start_time
 
-    total_timesteps = 1_000_000
+    total_timesteps = 1_500_000
     project_root = Path(__file__).resolve().parent.parent
     base_output_dir = project_root / "Training" / "Robot"
     base_output_dir.mkdir(parents=True, exist_ok=True)
     training_mode, resume_model_path = prompt_training_mode(base_output_dir)
 
-    # 创建本次训练的唯一目录
     _training_id = get_next_training_id(base_output_dir)
     _output_dir = base_output_dir / _training_id
     _output_dir.mkdir(parents=True, exist_ok=True)
 
-    # 记录训练开始时间
     _start_time = datetime.now()
 
-    # 保存训练配置
     config = {
         "training_id": _training_id,
         "start_time": _start_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -280,30 +345,31 @@ def main() -> None:
     else:
         print("🆕 本次为全新训练")
 
-    # 注册信号处理器
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
     env = make_env(verbosity=1)
+    env = RewardScaledVecEnv(env, scale=0.05)   # <-- 奖励缩放包装
     _env = env
 
-    # 检查 GPU 可用性
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🚀 使用设备: {device}")
     if device == "cuda":
         print(f"    GPU 型号: {torch.cuda.get_device_name(0)}")
-        # 适当增大 batch_size 以利用 GPU 并行能力
-        batch_size = 512
+        batch_size = 1024
         print(f"    调整 batch_size 为 {batch_size}")
     else:
         batch_size = 256
         print("    未检测到 GPU，使用 CPU 训练，batch_size=256")
 
-    # 检查点保存配置
+    action_dim = int(env.action_space.shape[0])
+    target_entropy = -float(action_dim)
+    # learning_rate_schedule = get_linear_fn(3e-4, 1e-5, 1.0)
+    print(f"    action_dim={action_dim}, target_entropy={target_entropy:.1f}")
+
     checkpoint_dir = _output_dir / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
 
-    # 定期保存检查点（每 50000 步保存一次）
     checkpoint_callback = CheckpointCallback(
         save_freq=50_000,
         save_path=str(checkpoint_dir),
@@ -313,6 +379,7 @@ def main() -> None:
         verbose=1,
     )
     metrics_callback = TensorboardMetricsCallback()
+    callbacks = [checkpoint_callback, metrics_callback]
 
     try:
         if training_mode == "resume":
@@ -330,8 +397,8 @@ def main() -> None:
                 verbose=1,
                 policy_kwargs=dict(
                     net_arch=dict(
-                        pi=[512, 512, 256],  # 策略网络：三层
-                        qf=[512, 512, 256]  # Q 网络：三层
+                        pi=[512, 512, 256],
+                        qf=[512, 512, 256]
                     )
                 ),
                 learning_rate=1e-4,
@@ -343,10 +410,8 @@ def main() -> None:
                 train_freq=1,
                 gradient_steps=1,
                 ent_coef="auto",
-                # ent_coef=0.005,
                 target_update_interval=1,
-                # target_entropy="auto",
-                target_entropy=-14,
+                target_entropy=target_entropy,
                 device=device,
                 tensorboard_log=str(_output_dir / "tensorboard"),
             )
@@ -354,23 +419,19 @@ def main() -> None:
 
         _model = model
 
-        # 开始训练
         model.learn(
             total_timesteps=total_timesteps,
             log_interval=10,
-            callback=[checkpoint_callback, metrics_callback],
+            callback=callbacks,
             reset_num_timesteps=(training_mode != "resume"),
         )
 
-        # 训练正常结束，保存最终模型（带时间戳）
         end_time = datetime.now()
         timestamp = end_time.strftime("%Y%m%d_%H%M%S")
 
-        # 保存最终模型
         final_model_path = _output_dir / f"orange_robot_sac_final_{timestamp}.zip"
         model.save(str(final_model_path))
 
-        # 更新训练元数据
         metadata = {
             "training_id": _training_id,
             "start_time": _start_time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -396,7 +457,6 @@ def main() -> None:
     except Exception as e:
         print(f"\n❌ 训练过程中发生错误: {e}")
 
-        # 保存错误模型
         if _model is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             error_model_path = _output_dir / f"orange_robot_sac_error_{timestamp}.zip"
