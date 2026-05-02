@@ -20,7 +20,9 @@ public class OrangeRobot : ModuleRules
 			"ScholaNNE", 
 			"ScholaInferenceUtils",
 			"NNEOnnxruntime",
-			"NNE"
+			"NNE",
+			"Json", 
+			"JsonUtilities"
 			
         });
 
