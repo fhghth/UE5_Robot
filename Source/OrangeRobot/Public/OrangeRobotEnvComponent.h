@@ -31,6 +31,126 @@ struct FOrangeRobotConstraintAxisCache
     }
 };
 
+USTRUCT(BlueprintType)
+struct FOrangeRobotRewardComponents
+{
+    GENERATED_BODY()
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float Alive = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float Height = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float LateralPenalty = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float SupportStability = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float GaitQuality = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float CommandTracking = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float ActionSmooth = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float EnergyPenalty = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float StepAlternation = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float FootImpactPenalty = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float SymmetryPenalty = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float StepFrequencyReward = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float CostOfTransportPenalty = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float FallTerminal = 0.0f;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float Total = 0.0f;
+    
+    //双足支撑稳定奖励
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float StableDoubleSupport = 0.0f;
+    
+    //躯干稳定惩罚
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float TrunkStabilityPenalty = 0.0f;
+};
+
+UENUM(BlueprintType, meta=(Bitflags))
+enum class ERewardGroupCore : uint8
+{
+    None            = 0 UMETA(Hidden),
+    Alive           = 1 << 0,
+    Height          = 1 << 1,
+    LateralPenalty  = 1 << 2,
+    TrunkStability  = 1 << 3,
+    CommandTracking = 1 << 4,
+    StableDoubleSupport = 1 << 5,   
+};
+
+UENUM(BlueprintType, meta=(Bitflags))
+enum class ERewardGroupGait : uint8
+{
+    None             = 0 UMETA(Hidden),
+    SupportStability = 1 << 0,
+    GaitQuality      = 1 << 1,
+    StepAlternation  = 1 << 2,
+    StepFrequency    = 1 << 3,
+    FootImpact       = 1 << 4,
+    Symmetry         = 1 << 5,
+};
+
+UENUM(BlueprintType, meta=(Bitflags))
+enum class ERewardGroupReg : uint8
+{
+    None            = 0 UMETA(Hidden),
+    Energy          = 1 << 0,
+    ActionSmooth    = 1 << 1,
+    CostOfTransport = 1 << 2,
+    FallTerminal    = 1 << 3,
+};
+
+template <typename TEnum>
+FORCEINLINE bool HasFlag(int32 Mask, TEnum Flag)
+{
+    return (Mask & static_cast<int32>(Flag)) != 0;
+}
+
+#define APPLY_REWARD_CORE(Flag, CodeBlock) \
+    do { if (HasFlag(RewardMaskCore, Flag)) { CodeBlock } } while (0)
+
+#define APPLY_REWARD_GAIT(Flag, CodeBlock) \
+    do { if (HasFlag(RewardMaskGait, Flag)) { CodeBlock } } while (0)
+
+#define APPLY_REWARD_REG(Flag, CodeBlock) \
+    do { if (HasFlag(RewardMaskReg, Flag)) { CodeBlock } } while (0)
+
+/** 自定义机器人轴枚举（支持正负方向） */
+UENUM(BlueprintType)
+enum class ERobotAxisDirection : uint8
+{
+    PlusX  UMETA(DisplayName = "+X"),
+    PlusY  UMETA(DisplayName = "+Y"),
+    PlusZ  UMETA(DisplayName = "+Z"),
+    MinusX UMETA(DisplayName = "-X"),
+    MinusY UMETA(DisplayName = "-Y"),
+    MinusZ UMETA(DisplayName = "-Z")
+};
+
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent, public IAgent
 {
@@ -44,351 +164,364 @@ public:
     // 机器人组件
     // ========================================================================
 
-    /** 头部组件，用于头部触地检测（checkFallen 优先使用） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     USceneComponent* HeadComponent = nullptr;
 
-    /** 机器人静态网格躯干，用于判断身体是否直立及倾斜检测 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     USceneComponent* TiltCheckComponent = nullptr;
 
-    /** 右脚 StaticMeshComponent（用于步态奖励与触地检测） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     UStaticMeshComponent* FootR = nullptr;
 
-    /** 左脚 StaticMeshComponent（用于步态奖励与触地检测） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     UStaticMeshComponent* FootL = nullptr;
 
-    /** 参与训练的物理约束组件列表（按推荐顺序排列） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     TArray<UPhysicsConstraintComponent*> DriveConstraints;
 
-    /** 与 DriveConstraints 一一对应的子连杆 StaticMeshComponent（用于读取关节角速度） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     TArray<UStaticMeshComponent*> BodyLinks;
 
     // ========================================================================
+    // 机器人本体轴配置（因导入模型可能前方为Y，右侧为-X等）
+    // ========================================================================
+    /** 机器人局部坐标系中，哪个方向代表“前方” */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup|Axes")
+    ERobotAxisDirection RobotForwardAxis = ERobotAxisDirection::PlusY;
+
+    /** 机器人局部坐标系中，哪个方向代表“右侧” */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup|Axes")
+    ERobotAxisDirection RobotRightAxis = ERobotAxisDirection::MinusX;
+
+    // ========================================================================
     // 初始状态
     // ========================================================================
-
-    /** 各 BodyLink 的初始世界 Transform（Reset 时恢复） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Setup")
     TArray<FTransform> InitialBodyLinkTransforms;
 
 private:
-    /** 左脚初始垂直距离（躯干Z - 左脚Z），用于摆动脚高度惩罚与观测归一化 */
     float InitialLeftFootDistance = 0.0f;
-
-    /** 右脚初始垂直距离（躯干Z - 右脚Z） */
     float InitialRightFootDistance = 0.0f;
 
 public:
     // ========================================================================
     // 高层命令
     // ========================================================================
-
-    /** 是否将高层命令 [CmdForward, CmdTurn] 追加到观测末尾 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     bool bEnableHighLevelCommand = false;
 
-    /** 当前高层命令：X = CmdForward, Y = CmdTurn */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Schola|Hierarchical")
     FVector2D HighLevelCommand = FVector2D::ZeroVector;
 
-    /** 是否在每个 episode 重置时随机采样高层命令 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
-    bool bSampleHighLevelCommandOnReset = true;
-
-    /** 高层前进命令映射到的最大局部前向速度（cm/s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     float MaxForwardSpeed = 200.0f;
 
-    /** 高层转向命令映射到的最大偏航角速度（deg/s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     float MaxTurnSpeedDegPerSec = 90.0f;
 
-    /** 仅设置高层命令，不触发推理；供蓝图/C++ 调度器调用 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Hierarchical")
     void SetHighLevelCommand(FVector2D InHighLevelCommand);
 
-    /** 清零高层命令，通常在 Reset 时调用 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Hierarchical")
     void ClearHighLevelCommand();
 
     // ========================================================================
+    // 内建课程学习 (C++ 侧)
+    // ========================================================================
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Curriculum")
+    bool bEnableCurriculum = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Curriculum")
+    int32 GlobalTrainingStep = 0;
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Curriculum")
+    int32 CurrentCurriculumStage = 0;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Curriculum")
+    TArray<int32> CurriculumStageBoundaries;
+
+    // ========================================================================
     // 观测配置
     // ========================================================================
-
-    /** 躯干高度观测归一化基准值（cm） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TrunkHeightNormalization = 100.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float DesiredStepPeriod = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float SimulationFrequencyHz = 30.0f;
 
     // ========================================================================
     // 奖励配置
     // ========================================================================
-
-    /** 是否启用命令匹配奖励（可用于课程控制） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     bool bEnableCommandReward = false;
 
-    /** 命令匹配基础奖励值（每步最大） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float CommandRewardScale = 1.0f;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     float CommandMatchBaseReward = 0.5f;
 
-    /** 前进命令匹配在总命令奖励中的权重 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     float ForwardCommandRewardWeight = 0.7f;
 
-    /** 转向命令匹配在总命令奖励中的权重 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
     float TurnCommandRewardWeight = 0.3f;
 
-    /** 每步存活奖励（鼓励保持站立） */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float ForwardCommandMatchSigmaMin = 25.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Schola|Hierarchical")
+    float TurnCommandMatchSigmaMin = 15.0f;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float AliveReward = 0.02f;
-
-    /** 站立直立奖励系数，鼓励身体保持竖直 */
+    
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float UprightRewardScale = 0.2f;
+    float StableDoubleSupportRewardScale = 0.1f;
 
-    /** 横向漂移惩罚系数，抑制左右乱晃 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float LateralVelocityPenaltyScale = 0.02f;
 
-    /** 双脚均不稳定时的惩罚系数，抑制腾空或无支撑状态 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float UnstableSupportPenaltyScale = 0.12f;
-
-    /** 双脚同时高速摆动惩罚系数，抑制双脚高频乱抖 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float DualFootShufflePenaltyScale = 0.0012f;
 
-    /** 第一阶段动态平衡过渡开关：启用后优先鼓励稳定支撑与小步纠偏 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    bool bEnableDynamicBalanceReward = true;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float DynamicBalanceRewardWeight = 1.0f;
 
-    /** 双脚同时稳定支撑时的奖励值 */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float DoubleSupportRewardScale = 0.15f;
-
-    /** 无条件前进速度奖励系数（鼓励产生向前的速度） */
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float ForwardVelocityUnconditionalRewardScale = 0.03f;
-
-    /** 前进速度奖励的归一化上限（cm/s） */
+    //只在运输成本惩罚（Cost of Transport）中发挥作用,
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float ForwardSpeedRewardMax = 150.0f;
+    
+    /** 站立指令时速度跟踪的标准差（cm/s 和 deg/s），值越小对漂移越敏感 */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float StandCommandSigma = 5.0f;
 
-    /** 单脚支撑时，摆动脚必须至少抬起的高度（cm） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float SwingFootMinHeight = 8.0f;
 
-    /** 摆动脚高度过低的惩罚系数（超出阈值的平方惩罚） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float SwingFootHeightPenaltyScale = 0.01f;
 
-    /** 单脚支撑额外奖励（前进中+直立+摆动合规时激活） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float SingleSupportBonusReward = 0.1f;
+    float SingleSupportBonusReward = 0.12f;
 
-    /** 单脚支撑时，躯干水平投影偏离支撑中心的惩罚系数 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TrunkSupportOffsetPenaltyScale = 0.003f;
 
-    /** 躯干水平投影偏移归一化距离（cm） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TrunkSupportOffsetNormalizeDistance = 25.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float ActionMagnitudePenaltyScale = 0.005f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float EnergySigma = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float StepAlternationRewardScale = 0.10f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float SameLegDominancePenaltyScale = 0.05f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float HeightRewardScale = 0.03f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float HeightDropPenaltyScale = 0.5f;
     
-    /** 是否启用站立专项奖励（静态站立时惩罚移动/倾斜，奖励双脚平踩） */
+    /*躯干稳定参数*/
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    bool bEnableStandReward = false;
+    float TrunkTiltPenaltyScale = 0.1f;
 
-    /** 站立时对躯干线速度的惩罚系数（cm/s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float StandVelocityPenaltyScale = 0.1f;
+    float TrunkAngVelXYPenaltyScale = 0.0005f;
 
-    /** 站立时对躯干角速度的惩罚系数（deg/s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float StandAngularVelocityPenaltyScale = 0.05f;
+    float TrunkVerticalVelocityPenaltyScale = 0.0001f;
 
-    /** 站立时奖励双脚同时触地且稳定的权重 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float StandStableFootReward = 0.2f;
+    float TrunkVerticalVelocityDeadzone = 5.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float FootImpactPenaltyScale = 0.01f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float FootImpactVelocityThreshold = 50.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float GaitSymmetryPenaltyScale = 0.02f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    TArray<int32> LeftLegJointIndices;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    TArray<int32> RightLegJointIndices;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float StepFrequencyRewardScale = 0.10f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float MinStepFrequencyHz = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float MaxStepFrequencyHz = 3.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float CostOfTransportScale = 0.003f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Reward",
+              meta = (Bitmask, BitmaskEnum = "/Script/OrangeRobot.ERewardGroupCore"))
+    int32 RewardMaskCore = -1;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Reward",
+              meta = (Bitmask, BitmaskEnum = "/Script/OrangeRobot.ERewardGroupGait"))
+    int32 RewardMaskGait = -1;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Reward",
+              meta = (Bitmask, BitmaskEnum = "/Script/OrangeRobot.ERewardGroupReg"))
+    int32 RewardMaskReg = -1;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Reward")
+    bool bLogRewardBreakdown = true;
 
     // ========================================================================
     // 动作 / 驱动配置
     // ========================================================================
-
-    /** 动作死区，小幅动作直接视为 0，减轻抖振 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float ActionDeadzone = 0.05f;
 
-    /** 归一化动作的非线性软映射指数；大于 1 时会压低中高幅动作，减轻爆冲 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float ActionResponseExponent = 2.0f;
 
-    /** 关节角速度目标缩放系数（将归一化动作 [-1,1] 映射到 °/s） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float JointVelocityScale = 90.0f;
 
-    /** Twist 角速度目标硬上限（度/秒） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TwistVelocityLimit = 45.0f;
 
-    /** Swing1 / Swing2 角速度目标硬上限（度/秒） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float SwingVelocityLimit = 35.0f;
 
-    /** 动作平滑惩罚系数（抑制关节抖振，对相邻帧动作差值施加惩罚） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float ActionSmoothPenaltyScale = 0.005f;
+    float ActionSmoothPenaltyScale = 0.008f;
 
     // ========================================================================
     // 训练超参数
     // ========================================================================
-
-    /** 最大剧集步数，超过后 bTruncated = true */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     int32 MaxSteps = 2000;
 
-    /** 躯干倾斜超过此角度（度）视为摔倒并终止剧集（未配置 HeadComponent 时使用） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float FallTiltThreshold = 45.0f;
 
-    /** 头部世界 Z 坐标低于此阈值时视为摔倒 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float HeadGroundHeightThreshold = 30.0f;
 
-    /** 摔倒惩罚值 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    float FallPenalty = 10.0f;
+    int32 FallPenaltyHorizon = 200;
 
-    /** 身体世界 Z 坐标低于此阈值时，认为机体已塌陷 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float BodyHeightThreshold = 45.0f;
 
-    /** 身体高度奖励归一化上限（大于该高度后按满额计算） */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float BodyHeightRewardMax = 90.0f;
 
-    /** 脚部向下探测距离，用于判断是否接近地面支撑 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float FootSupportTraceDistance = 12.0f;
 
-    /** 脚部线速度低于此阈值（cm/s）时，可视为稳定支撑脚 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float FootStableSpeedThreshold = 35.0f;
 
-    /** Reset 时是否对关节施加小幅随机角速度扰动，增强策略鲁棒性 */
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     bool bApplyRandomJointOffsetsOnReset = false;
 
     // ========================================================================
+    // 动态参数设置
+    // ========================================================================
+    UFUNCTION(BlueprintCallable, Category = "Schola|Hierarchical")
+    void SetCommandRewardScale(float Scale);
+
+    UFUNCTION(BlueprintCallable, Category = "Robot|Training")
+    void SetDynamicBalanceRewardWeight(float Weight);
+
+    UFUNCTION(BlueprintCallable, Category = "Robot|Training")
+    void SetGaitSymmetryPenaltyScale(float Scale);
+
+    UFUNCTION(BlueprintCallable, Category = "Robot|Training")
+    void SetStepFrequencyRewardScale(float Scale);
+
+    UFUNCTION(BlueprintCallable, Category = "Robot|Training")
+    void SetCostOfTransportScale(float Scale);
+
+    // ========================================================================
     // 状态缓存 & 调试
     // ========================================================================
-
-    /** 当前剧集已执行步数，ResetEnv() 时自动清零 */
     UPROPERTY(BlueprintReadOnly, Category = "Robot|Training")
     int32 CurrentStep = 0;
 
-    /** 当前每个约束缓存出的可控动作轴数量 */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
     TArray<int32> JointActionAxes;
 
-    /** 当前每个约束缓存出的可控轴详情（Twist / Swing1 / Swing2） */
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Debug")
     TArray<FOrangeRobotConstraintAxisCache> JointAxisCaches;
+    
+    //一键导出参数
+    UFUNCTION(CallInEditor, BlueprintCallable, Category = "Robot|Debug")
+    void ExportAllConfigToJSON();
+
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    FOrangeRobotRewardComponents LastRewardComponents;
 
 private:
-    /** 上一帧动作缓存，用于动作平滑惩罚计算 */
     TArray<float> LastAction;
-
-    /** 上上一帧动作缓存，用于计算相邻帧动作变化惩罚 */
     TArray<float> PreviousAction;
-
     EAgentStatus AgentStatus = EAgentStatus::Running;
 
-public:
-    // ========================================================================
-    // 空间维度查询
-    // ========================================================================
+    enum class ESupportSide : uint8 { None, Left, Right };
+    ESupportSide LastSingleSupportSide = ESupportSide::None;
+    int32 SameLegConsecutiveSteps = 0;
+    float GaitPhase = 0.0f;
 
-    /** 返回低层观测向量维度 */
+    bool bLTouchPrev = false;
+    bool bRTouchPrev = false;
+    int32 LastStepTransitionStep = -1;
+
+public:
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetLowLevelObservationDim() const;
 
-    /** 返回总观测向量维度（包含高层命令） */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetObservationDim() const;
 
-    /** 返回动作向量维度 */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Space")
     int32 GetActionDim() const;
 
-    // ========================================================================
-    // 初始状态记录
-    // ========================================================================
-
-    /** 记录当前 Transform 为初始状态，并缓存各约束的可控动作轴 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
     void CaptureInitialTransform();
 
-    // ========================================================================
-    // 观测收集
-    // ========================================================================
-
-    /** 收集当前帧总观测向量 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
     TArray<float> CollectObservations() const;
 
-    /** 收集当前帧低层观测向量，不包含高层命令 */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Robot|LowLevel")
     TArray<float> CollectLowLevelObservations() const;
 
-    // ========================================================================
-    // 动作应用
-    // ========================================================================
-
-    /** 将归一化动作应用到各约束的角速度目标 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
     void ApplyAction(const TArray<float>& Action);
 
-    // ========================================================================
-    // 奖励计算
-    // ========================================================================
-
-    /** 计算当前步奖励 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Step")
     float ComputeReward();
 
-    // ========================================================================
-    // 终止条件
-    // ========================================================================
-
-    /** 判断是否摔倒（终止条件） */
     UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Schola|Step")
     bool CheckFallen() const;
 
-    // ========================================================================
-    // 重置逻辑
-    // ========================================================================
-
-    /** 重置环境到初始状态，清零所有速度与目标 */
     UFUNCTION(BlueprintCallable, Category = "Schola|Reset")
     void ResetEnv();
 
-    // ========================================================================
-    // 调试与工具
-    // ========================================================================
-
-    /** 打印所有驱动约束的状态信息到日志 */
     UFUNCTION(BlueprintCallable, Category = "Robot|Debug")
     void LogDriveConstraintStates() const;
-
-    // ========================================================================
-    // IAgent 接口实现
-    // ========================================================================
 
     virtual EAgentStatus GetStatus_Implementation() override;
     virtual void SetStatus_Implementation(EAgentStatus NewStatus) override;
@@ -397,12 +530,7 @@ public:
     virtual void Observe_Implementation(FInstancedStruct& OutObservations) override;
 
 private:
-    // ========================================================================
-    // 内部辅助函数
-    // ========================================================================
-
     UPrimitiveComponent* GetTrunkPrimitive() const;
-
     void CacheJointActionAxes();
     FOrangeRobotConstraintAxisCache BuildConstraintAxisCache(UPhysicsConstraintComponent* Constraint) const;
 
@@ -417,6 +545,7 @@ private:
     float GetUprightDot() const;
     float GetBodyHeight() const;
 
+    bool IsComponentTouchingGround(const UPrimitiveComponent* Component) const;
     bool IsFootTouchingGround(const UPrimitiveComponent* FootComponent) const;
     bool IsFootStableSupport(const UPrimitiveComponent* FootComponent) const;
     bool HasStableFootSupport() const;
@@ -428,8 +557,23 @@ private:
     float GetTrunkSupportOffsetNormalized(bool bLeftStable, bool bRightStable) const;
 
     void SampleEpisodeHighLevelCommand();
+    void UpdateCurriculumWeightsAndCommand();
+
+    float GetJointAngle(int32 JointIndex, int32 AxisSlot) const;
+
+    // --- 自定义轴辅助函数 ---
+    /** 根据枚举将四元数转换为对应的方向向量 */
+    FVector GetAxisVector(const FQuat& Rotation, ERobotAxisDirection Axis) const;
+    /** 从组件获取机器人前方的单位向量（世界方向） */
+    FVector GetRobotForwardVector(const UPrimitiveComponent* Comp) const;
+    /** 从组件获取机器人右方的单位向量（世界方向） */
+    FVector GetRobotRightVector(const UPrimitiveComponent* Comp) const;
+    /** 计算局部平面速度：X=前进，Y=右侧，Z=0 */
+    FVector GetLocalRobotPlanarVelocity(const UPrimitiveComponent* Component, const FVector& WorldVelocity) const;
 
 #if WITH_EDITOR
     void DrawHighLevelCommandDebug() const;
+    /** 可视化绘制机器人本体坐标轴（编辑器Tick中调用） */
+    void DrawRobotCoordinateAxes() const;
 #endif
 };
