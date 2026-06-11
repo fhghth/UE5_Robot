@@ -5,13 +5,19 @@ from datetime import datetime
 import json
 
 import torch
+import torch.nn as nn
 from stable_baselines3 import SAC
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
-from stable_baselines3.common.utils import get_linear_fn
 from stable_baselines3.common.vec_env import VecEnv as BaseVecEnv
 from schola.core.protocols.protobuf.gRPC import gRPCProtocol
 from schola.core.simulators.unreal.editor import UnrealEditor
 from schola.sb3.env import VecEnv
+
+import gym
+from torch.optim import Adam
+
+gym.__version__ = gym.__version__ if hasattr(gym, '__version__') else "0.21.0"
 
 # 全局变量，用于信号处理器访问
 _model = None
@@ -21,11 +27,71 @@ _training_id = None
 _start_time = None
 
 
+# ====================================================================
+# SAC 默认超参（与 train_headless.py 保持同步）
+# ====================================================================
+SAC_DEFAULTS = {
+    "orangerobot": {
+        "buffer_size": 1_000_000,
+        "learning_starts": 5_000,
+        "batch_size": 1024,
+        "tau": 0.005,
+        "gradient_steps": 4,
+        "target_entropy": "auto",
+        "net_arch": dict(pi=[512, 512, 256], qf=[512, 512, 256]),
+        "reward_scale": 0.05,
+        "checkpoint_freq": 50_000,
+        "learning_rate": 5e-5,
+        "gamma": 0.95,
+        "ent_coef": 0.2,
+    },
+}
+
+
+# ====================================================================
+# 自定义组件
+# ====================================================================
+
+class ClippedAdam(torch.optim.Adam):
+    """Adam optimizer with gradient clipping applied before each step."""
+
+    def __init__(self, *args, max_grad_norm: float = 10.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_grad_norm = max_grad_norm
+
+    def step(self, closure=None):
+        if self.max_grad_norm is not None and self.max_grad_norm > 0:
+            for group in self.param_groups:
+                torch.nn.utils.clip_grad_norm_(
+                    group["params"], self.max_grad_norm
+                )
+        super().step(closure)
+
+
+class LayerNormMlpExtractor(BaseFeaturesExtractor):
+    """MLP feature extractor with LayerNorm after each hidden layer."""
+
+    def __init__(self, observation_space, net_arch=None, activation_fn=nn.ReLU):
+        if net_arch is None:
+            net_arch = [512, 512, 256]
+        super().__init__(observation_space, net_arch[-1])
+
+        layers = []
+        prev_dim = int(observation_space.shape[0])
+        for hidden_dim in net_arch:
+            layers.append(nn.Linear(prev_dim, hidden_dim))
+            layers.append(nn.LayerNorm(hidden_dim))
+            layers.append(activation_fn())
+            prev_dim = hidden_dim
+        self.mlp = nn.Sequential(*layers)
+
+    def forward(self, obs):
+        return self.mlp(obs)
+
+
 class RewardScaledVecEnv(BaseVecEnv):
-    """
-    向量化环境的奖励缩放包装器。
-    将每一步的奖励乘以 scale 系数。
-    """
+    """向量化环境的奖励缩放包装器。"""
+
     def __init__(self, venv, scale=0.05):
         self.venv = venv
         self.scale = scale
@@ -65,14 +131,13 @@ class RewardScaledVecEnv(BaseVecEnv):
         return self.venv.render(*args, **kwargs)
 
     def __getattr__(self, name):
-        # 未显式代理的属性一律转发到底层环境
         if 'venv' in self.__dict__:
             return getattr(self.venv, name)
         raise AttributeError(name)
 
 
 class TensorboardMetricsCallback(BaseCallback):
-    """记录更全面的 episode 指标，便于在 TensorBoard 分析训练过程。"""
+    """记录 episode 指标 + SAC 诊断，含双 Q 网络独立性验证。"""
 
     def __init__(self, sac_log_freq: int = 200, verbose: int = 0):
         super().__init__(verbose)
@@ -109,7 +174,6 @@ class TensorboardMetricsCallback(BaseCallback):
                 if scalar is not None:
                     self.logger.record(f"reward_components/{key}", scalar)
             return
-
         for key, value in info.items():
             if not isinstance(key, str):
                 continue
@@ -198,14 +262,19 @@ class TensorboardMetricsCallback(BaseCallback):
         with torch.no_grad():
             obs_tensor, _ = model.policy.obs_to_tensor(obs)
             actions_pi, log_prob = model.actor.action_log_prob(obs_tensor)
-            q_values = model.critic(obs_tensor, actions_pi)
-            q_min = torch.min(torch.cat(q_values, dim=1), dim=1, keepdim=True)[0]
+
+            # 双 Q 网络独立性记录
+            q1, q2 = model.critic(obs_tensor, actions_pi)
+            q_min = torch.min(torch.cat([q1, q2], dim=1), dim=1, keepdim=True)[0]
 
             entropy_value = float((-log_prob).mean().item())
             self.logger.record("train/entropy", entropy_value)
             self.logger.record("train/q_value_mean", float(q_min.mean().item()))
             self.logger.record("train/q_value_min", float(q_min.min().item()))
             self.logger.record("train/q_value_max", float(q_min.max().item()))
+            self.logger.record("train/q1_mean", float(q1.mean().item()))
+            self.logger.record("train/q2_mean", float(q2.mean().item()))
+            self.logger.record("train/q1_q2_diff", float((q1 - q2).abs().mean().item()))
 
             ent_coef_value = None
             if getattr(model, "log_ent_coef", None) is not None:
@@ -216,6 +285,10 @@ class TensorboardMetricsCallback(BaseCallback):
                 self.logger.record("train/ent_coef_value", ent_coef_value)
 
 
+# ====================================================================
+# 工具函数
+# ====================================================================
+
 def signal_handler(sig, frame):
     """处理 Ctrl+C 中断信号，保存模型并安全退出"""
     print("\n⚠️ 收到中断信号，正在保存模型并关闭环境...")
@@ -223,11 +296,8 @@ def signal_handler(sig, frame):
         if _model is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             save_path = _output_dir / f"orange_robot_sac_interrupted_{_training_id}_{timestamp}.zip"
-
-            # 保存模型
             _model.save(str(save_path))
 
-            # 保存训练元数据
             metadata = {
                 "training_id": _training_id,
                 "timestamp": timestamp,
@@ -254,7 +324,6 @@ def get_next_training_id(output_dir: Path) -> str:
     """获取下一个可用的训练ID（自动递增）"""
     training_dirs = [d for d in output_dir.iterdir() if d.is_dir()]
     training_nums = []
-
     for d in training_dirs:
         if d.name.startswith("training_"):
             try:
@@ -262,12 +331,7 @@ def get_next_training_id(output_dir: Path) -> str:
                 training_nums.append(num)
             except (ValueError, IndexError):
                 pass
-
-    if training_nums:
-        next_num = max(training_nums) + 1
-    else:
-        next_num = 1
-
+    next_num = max(training_nums) + 1 if training_nums else 1
     return f"training_{next_num:03d}"
 
 
@@ -296,19 +360,19 @@ def prompt_training_mode(base_output_dir: Path) -> tuple[str, Path | None]:
                 if not raw_path:
                     print("⚠️ 路径不能为空，请重新输入。")
                     continue
-
                 resume_model_path = Path(raw_path)
                 if not resume_model_path.is_absolute():
                     resume_model_path = (base_output_dir.parent.parent / resume_model_path).resolve()
-
                 if not resume_model_path.exists() or not resume_model_path.is_file():
                     print(f"❌ 文件不存在: {resume_model_path}")
                     continue
-
                 return "resume", resume_model_path
-
         print("⚠️ 无效输入，请输入 1 或 2。")
 
+
+# ====================================================================
+# 主训练流程
+# ====================================================================
 
 def main() -> None:
     global _model, _env, _output_dir, _training_id, _start_time
@@ -322,8 +386,9 @@ def main() -> None:
     _training_id = get_next_training_id(base_output_dir)
     _output_dir = base_output_dir / _training_id
     _output_dir.mkdir(parents=True, exist_ok=True)
-
     _start_time = datetime.now()
+
+    sac = SAC_DEFAULTS["orangerobot"].copy()
 
     config = {
         "training_id": _training_id,
@@ -332,14 +397,17 @@ def main() -> None:
         "algorithm": "SAC",
         "training_mode": training_mode,
         "resume_from": str(resume_model_path) if resume_model_path is not None else None,
+        "sac_params": sac,
     }
-
     config_path = _output_dir / "training_config.json"
     with open(config_path, 'w') as f:
         json.dump(config, f, indent=2)
 
     print(f"🎯 开始训练: {_training_id}")
     print(f"📁 输出目录: {_output_dir}")
+    print(f"⚙️  SAC 参数: lr={sac['learning_rate']}, γ={sac['gamma']}, "
+          f"ent_coef={sac['ent_coef']}, grad_steps={sac['gradient_steps']}, "
+          f"fall_penalty_horizon=5")
     if training_mode == "resume" and resume_model_path is not None:
         print(f"📦 继续训练权重: {resume_model_path}")
     else:
@@ -349,29 +417,25 @@ def main() -> None:
     signal.signal(signal.SIGTERM, signal_handler)
 
     env = make_env(verbosity=1)
-    env = RewardScaledVecEnv(env, scale=0.05)   # <-- 奖励缩放包装
+    reward_scale = sac["reward_scale"]
+    if reward_scale is not None:
+        env = RewardScaledVecEnv(env, scale=reward_scale)
     _env = env
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"🚀 使用设备: {device}")
     if device == "cuda":
         print(f"    GPU 型号: {torch.cuda.get_device_name(0)}")
-        batch_size = 1024
-        print(f"    调整 batch_size 为 {batch_size}")
-    else:
-        batch_size = 256
-        print("    未检测到 GPU，使用 CPU 训练，batch_size=256")
 
     action_dim = int(env.action_space.shape[0])
-    target_entropy = -float(action_dim)
-    # learning_rate_schedule = get_linear_fn(3e-4, 1e-5, 1.0)
+    target_entropy = sac["target_entropy"] if sac["target_entropy"] != "auto" else -float(action_dim)
     print(f"    action_dim={action_dim}, target_entropy={target_entropy:.1f}")
 
     checkpoint_dir = _output_dir / "checkpoints"
     checkpoint_dir.mkdir(exist_ok=True)
 
     checkpoint_callback = CheckpointCallback(
-        save_freq=50_000,
+        save_freq=sac["checkpoint_freq"],
         save_path=str(checkpoint_dir),
         name_prefix="orange_robot_sac",
         save_replay_buffer=True,
@@ -395,27 +459,29 @@ def main() -> None:
                 policy="MlpPolicy",
                 env=env,
                 verbose=1,
-                policy_kwargs=dict(
-                    net_arch=dict(
-                        pi=[512, 512, 256],
-                        qf=[512, 512, 256]
-                    )
-                ),
-                learning_rate=1e-4,
-                buffer_size=1_000_000,
-                learning_starts=20_000,
-                batch_size=batch_size,
-                tau=0.005,
-                gamma=0.99,
+                learning_rate=sac["learning_rate"],
+                buffer_size=sac["buffer_size"],
+                learning_starts=sac["learning_starts"],
+                batch_size=sac["batch_size"],
+                tau=sac["tau"],
+                gamma=sac["gamma"],
                 train_freq=1,
-                gradient_steps=1,
-                ent_coef="auto",
+                gradient_steps=sac["gradient_steps"],
+                ent_coef=sac["ent_coef"],
                 target_update_interval=1,
                 target_entropy=target_entropy,
                 device=device,
                 tensorboard_log=str(_output_dir / "tensorboard"),
+                policy_kwargs=dict(
+                    features_extractor_class=LayerNormMlpExtractor,
+                    features_extractor_kwargs=dict(net_arch=[512, 512, 256]),
+                    net_arch=[],
+                    optimizer_class=ClippedAdam,
+                    optimizer_kwargs=dict(max_grad_norm=10.0),
+                ),
             )
             print("🆕 已创建新的 SAC 模型")
+            print("    LayerNorm ✓ | ClippedAdam(max_grad_norm=10.0) ✓ | ent_coef=0.2 ✓")
 
         _model = model
 
@@ -442,7 +508,6 @@ def main() -> None:
             "final_model": str(final_model_path.relative_to(base_output_dir)),
             "device_used": device
         }
-
         metadata_path = _output_dir / f"training_metadata_{_training_id}.json"
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -456,7 +521,6 @@ def main() -> None:
         print("\n⚠️ KeyboardInterrupt 捕获，退出中...")
     except Exception as e:
         print(f"\n❌ 训练过程中发生错误: {e}")
-
         if _model is not None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             error_model_path = _output_dir / f"orange_robot_sac_error_{timestamp}.zip"

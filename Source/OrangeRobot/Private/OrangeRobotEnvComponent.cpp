@@ -13,6 +13,7 @@
 #include "HAL/PlatformFilemanager.h"
 #include "UObject/FieldIterator.h"
 #include "JsonObjectConverter.h"  
+#include "EnvConfigLoader.h"
 
 namespace
 {
@@ -157,6 +158,24 @@ FVector UOrangeRobotEnvComponent::GetLocalRobotPlanarVelocity(const UPrimitiveCo
 UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
 {
     PrimaryComponentTick.bCanEverTick = true;
+}
+
+void UOrangeRobotEnvComponent::BeginPlay()
+{
+    Super::BeginPlay();
+
+    if (!bEnvConfigLoadedFromCommandLine)
+    {
+        bEnvConfigLoadedFromCommandLine = UEnvConfigLoader::LoadConfigFromCommandLine(this);
+        if (bEnvConfigLoadedFromCommandLine)
+        {
+            UE_LOG(LogTemp, Log, TEXT("OrangeRobotEnvComponent: runtime env config applied from command line"));
+        }
+        else
+        {
+            UE_LOG(LogTemp, Log, TEXT("OrangeRobotEnvComponent: using blueprint/default config values"));
+        }
+    }
 }
 
 //一键导出参数
@@ -729,6 +748,22 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
     TArray<float> CurrentAction;
     CurrentAction.Init(0.0f, ExpectedDim);
 
+    // L2-norm clamp: scale down all actions proportionally when the policy
+    // tries to drive all joints at max speed simultaneously. Prevents Chaos
+    // solver from spending excessive sub-iterations per physics step.
+    TArray<float> ClampedRawAction = Action;
+    {
+        float ActionNormSq = 0.0f;
+        for (float V : Action) ActionNormSq += V * V;
+        const float ActionNorm = FMath::Sqrt(ActionNormSq);
+        const float MaxActionNorm = 2.0f;  // ~0.63 per dim for 10-DoF
+        if (ActionNorm > MaxActionNorm)
+        {
+            const float Scale = MaxActionNorm / ActionNorm;
+            for (float& V : ClampedRawAction) V *= Scale;
+        }
+    }
+
     int32 ActionIndex = 0;
     for (int32 JointIdx = 0; JointIdx < DriveConstraints.Num(); ++JointIdx)
     {
@@ -741,7 +776,7 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
         auto ConsumeAction = [&](double& OutVel, float Limit)
         {
             if (!CurrentAction.IsValidIndex(ActionIndex)) { ++ActionIndex; return; }
-            float Val = Action.IsValidIndex(ActionIndex) ? FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) : 0.0f;
+            float Val = ClampedRawAction.IsValidIndex(ActionIndex) ? FMath::Clamp(ClampedRawAction[ActionIndex], -1.0f, 1.0f) : 0.0f;
             if (FMath::Abs(Val) < ActionDeadzone) Val = 0.0f;
             else Val = ShapeNormalizedAction(Val, ActionResponseExponent);
             CurrentAction[ActionIndex] = Val;
@@ -952,34 +987,37 @@ float UOrangeRobotEnvComponent::ComputeReward()
     // 3.1 Alive（CORE / 正奖励）
     // --------------------------
     APPLY_REWARD_CORE(ERewardGroupCore::Alive, {
-    float StandStability = 0.0f;
-    
-    if (bHasSupport && !bFallen)
+    if (UprightDot < TiltQualityGate)
     {
-        // 1) 直立质量：越直立越接近 1.0
-        const float TiltQuality = FMath::Clamp(UprightDot, 0.0f, 1.0f);
-        
-        // 2) 垂直颠簸惩罚：上下抖动越厉害越接近 0
-        float VerticalSpeedCm = 0.0f;
-        if (TrunkComp)
-        {
-            VerticalSpeedCm = FMath::Abs(
-                FVector::DotProduct(TrunkComp->GetComponentVelocity(), FVector::UpVector));
-        }
-        const float VelQuality = FMath::Clamp(
-            1.0f - (VerticalSpeedCm / 20.0f), 0.0f, 1.0f);
-        
-        // 3) 综合稳定性（两项同时好才给高奖励）
-        StandStability = TiltQuality * VelQuality;
+        // 倾斜超过门控阈值：当帧不给存活奖励
+        Components.Alive = 0.0f;
     }
-        
-        // 范围：[0.5 * AliveReward, 1.5 * AliveReward]
-    // Components.Alive = AliveReward * FMath::Lerp(0.5f, 1.5f, StandStability);
-    
-    // // 基线奖励 + 稳定性加成
-    // // 范围：[AliveReward, 2 * AliveReward]
-    Components.Alive = AliveReward * (1.0f + StandStability);
-        
+    else
+    {
+        float StandStability = 0.0f;
+
+        if (bHasSupport && !bFallen)
+        {
+            // 1) 直立质量：越直立越接近 1.0
+            const float TiltQuality = FMath::Clamp(UprightDot, 0.0f, 1.0f);
+
+            // 2) 垂直颠簸惩罚：上下抖动越厉害越接近 0
+            float VerticalSpeedCm = 0.0f;
+            if (TrunkComp)
+            {
+                VerticalSpeedCm = FMath::Abs(
+                    FVector::DotProduct(TrunkComp->GetComponentVelocity(), FVector::UpVector));
+            }
+            const float VelQuality = FMath::Clamp(
+                1.0f - (VerticalSpeedCm / 20.0f), 0.0f, 1.0f);
+
+            // 3) 综合稳定性（两项同时好才给高奖励）
+            StandStability = TiltQuality * VelQuality;
+        }
+
+        // // 范围：[AliveReward, 2 * AliveReward]
+        Components.Alive = AliveReward * (1.0f + StandStability);
+    }
 });
 
     // // --------------------------
@@ -1080,6 +1118,23 @@ float UOrangeRobotEnvComponent::ComputeReward()
     {
         float SupportReward = 0.0f;
         float GaitReward    = 0.0f;
+
+        // --- 膝关节伸展惩罚：右膝[5] 左膝[11]，Swing1=轴1，弯曲越深惩罚越重
+        {
+            const int32 RightKneeIdx = 5;
+            const int32 LeftKneeIdx  = 11;
+            const int32 KneeAxis = 1;  // Swing1
+
+            float RightKneeAngle = FMath::Max(0.0f,
+                GetJointAngle(RightKneeIdx, KneeAxis));
+            float LeftKneeAngle = FMath::Max(0.0f,
+                GetJointAngle(LeftKneeIdx, KneeAxis));
+
+            const float RightPenalty = FMath::Square(RightKneeAngle) * KneeExtensionPenaltyScale;
+            const float LeftPenalty  = FMath::Square(LeftKneeAngle)  * KneeExtensionPenaltyScale;
+
+            Components.KneeExtensionPenalty = -(RightPenalty + LeftPenalty) * ClampedDynamicBalanceWeight;
+        }
 
         // --- 步态质量负项：双脚拖地/乱蹭（平方惩罚）
         GaitReward -= (LSlide * LSlide + RSlide * RSlide) * DualFootShufflePenaltyScale * 0.1f;
@@ -1262,8 +1317,24 @@ float UOrangeRobotEnvComponent::ComputeReward()
             VerticalVelPenalty = FMath::Min(FMath::Square(ExcessCm) * TrunkVerticalVelocityPenaltyScale,VertVelPenaltyMax);
         }
 
+        // --- 倾倒预警：倾斜角度超过倒地阈值50%时开始预警 ---
+        float TiltWarningVal = 0.0f;
+        {
+            const float TiltAngleRad = FMath::Acos(FMath::Clamp(UprightDot, -1.0f, 1.0f));
+            const float TiltAngleDeg = FMath::RadiansToDegrees(TiltAngleRad);
+            const float WarningThresholdDeg = FallTiltThreshold * 0.5f;
+
+            if (TiltAngleDeg > WarningThresholdDeg)
+            {
+                const float Excess = (TiltAngleDeg - WarningThresholdDeg)
+                                   / FMath::Max(FallTiltThreshold - WarningThresholdDeg, 1.0f);
+                TiltWarningVal = -TiltWarningScale * FMath::Square(Excess);
+            }
+        }
+
         APPLY_REWARD_CORE(ERewardGroupCore::TrunkStability, {
             Components.TrunkStabilityPenalty = -(TiltPenalty + AngVelXYPenalty + VerticalVelPenalty);
+            Components.TiltWarning = TiltWarningVal;
         });
     }
 
@@ -1371,8 +1442,13 @@ float UOrangeRobotEnvComponent::ComputeReward()
         const int32 RemainingSteps = FMath::Max(0, MaxSteps - CurrentStep);
         const int32 PenaltySteps   = FMath::Min(RemainingSteps, FMath::Max(FallPenaltyHorizon, 1));
 
+        // Curriculum-dependent fall penalty scaling
+        const float FallScale = (CurrentCurriculumStage == 0) ? 0.2f
+                              : (CurrentCurriculumStage == 1) ? 0.5f
+                              : 1.0f;
+
         APPLY_REWARD_REG(ERewardGroupReg::FallTerminal, {
-            Components.FallTerminal = -FMath::Abs(AliveReward) * PenaltySteps;
+            Components.FallTerminal = -FMath::Abs(AliveReward) * PenaltySteps * FallScale;
         });
     }
 
@@ -1388,11 +1464,13 @@ float UOrangeRobotEnvComponent::ComputeReward()
         + Components.StableDoubleSupport
         + Components.SupportStability
         + Components.GaitQuality
+        + Components.KneeExtensionPenalty
         + Components.CommandTracking
         + Components.ActionSmooth
         + Components.EnergyPenalty
         + Components.StepAlternation
         + Components.TrunkStabilityPenalty
+        + Components.TiltWarning
         + Components.FootImpactPenalty
         + Components.SymmetryPenalty
         + Components.StepFrequencyReward
@@ -1404,12 +1482,14 @@ float UOrangeRobotEnvComponent::ComputeReward()
     if (bLogRewardBreakdown && CurrentStep > 0 && (CurrentStep % 10) == 0)
     {
         UE_LOG(LogTemp, Log,
-    TEXT("RewardBreakdown Step=%d Core=0x%08X Gait=0x%08X Reg=0x%08X Total=%.4f | Alive=%.4f Height=%.4f Lat=%.4f StableDS=%.4f Support=%.4f Gait=%.4f Cmd=%.4f Smooth=%.4f Energy=%.4f StepAlt=%.4f TrunkSP=%.4f Impact=%.4f Sym=%.4f StepFreq=%.4f CoT=%.4f Fall=%.4f"),
+    TEXT("RewardBreakdown Step=%d Core=0x%08X Gait=0x%08X Reg=0x%08X Total=%.4f | Alive=%.4f Height=%.4f Lat=%.4f StableDS=%.4f Support=%.4f Gait=%.4f Knee=%.4f Cmd=%.4f Smooth=%.4f Energy=%.4f StepAlt=%.4f TrunkSP=%.4f TiltWarn=%.4f Impact=%.4f Sym=%.4f StepFreq=%.4f CoT=%.4f Fall=%.4f"),
     CurrentStep, RewardMaskCore, RewardMaskGait, RewardMaskReg, Components.Total,
     Components.Alive, Components.Height, Components.LateralPenalty,
     Components.StableDoubleSupport,
-    Components.SupportStability, Components.GaitQuality, Components.CommandTracking, Components.ActionSmooth,
+    Components.SupportStability, Components.GaitQuality, Components.KneeExtensionPenalty,
+    Components.CommandTracking, Components.ActionSmooth,
     Components.EnergyPenalty, Components.StepAlternation, Components.TrunkStabilityPenalty,
+    Components.TiltWarning,
     Components.FootImpactPenalty, Components.SymmetryPenalty, Components.StepFrequencyReward,
     Components.CostOfTransportPenalty, Components.FallTerminal);
     }
@@ -1430,7 +1510,7 @@ float UOrangeRobotEnvComponent::ComputeReward()
     const float StepsPerCycle = FMath::Max(DesiredStepPeriod * SimulationFrequencyHz, 1.0f);
     GaitPhase = FMath::Fmod(CurrentStep * 2.0f * PI / StepsPerCycle, 2.0f * PI);
 
-    return Components.Total;
+    return FMath::Clamp(Components.Total, RewardClampMin, RewardClampMax);
 }
 
 // ---------------------------------------------------------------------------
@@ -1535,8 +1615,15 @@ void UOrangeRobotEnvComponent::SetStatus_Implementation(EAgentStatus NewStatus) 
 
 void UOrangeRobotEnvComponent::Define_Implementation(FInteractionDefinition& OutInteractionDefinition)
 {
+    if (JointAxisCaches.IsEmpty() || JointActionAxes.IsEmpty())
+    {
+        CacheJointActionAxes();
+    }
     const int32 ObsDim = GetObservationDim();
     const int32 ActDim = GetActionDim();
+
+    UE_LOG(LogTemp, Warning, TEXT("[Define] ObsDim=%d, ActDim=%d, JointAxisCount=%d, DriveConstraints=%d, bEnableCmd=%d"),
+        ObsDim, ActDim, JointActionAxes.Num(), DriveConstraints.Num(), bEnableCommandReward ? 1 : 0);
     TArray<float> ObsLow, ObsHigh, ActLow, ActHigh;
     ObsLow.Init(-5.0f, ObsDim);  ObsHigh.Init(5.0f, ObsDim);
     ActLow.Init(-1.0f, ActDim);  ActHigh.Init(1.0f, ActDim);

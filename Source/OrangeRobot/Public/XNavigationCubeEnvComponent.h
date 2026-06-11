@@ -9,6 +9,15 @@
 #include "Agent/AgentInterface.h"
 #include "XNavigationCubeEnvComponent.generated.h"
 
+UENUM(BlueprintType)
+enum class ENavigationForwardAxis : uint8
+{
+	PlusX UMETA(DisplayName = "+X"),
+	PlusY UMETA(DisplayName = "+Y"),
+	MinusX UMETA(DisplayName = "-X"),
+	MinusY UMETA(DisplayName = "-Y"),
+};
+
 UCLASS(Blueprintable, BlueprintType, meta = (BlueprintSpawnableComponent))
 class ORANGEROBOT_API UXNavigationCubeEnvComponent : public UActorComponent, public IAgent
 {
@@ -21,6 +30,9 @@ public:
 
 protected:
 	virtual void BeginPlay() override;
+
+	/** 根据 ForwardAxis 返回组件的前向世界方向 */
+	FVector GetNavigationForwardVector() const;
 
 	TArray<FVector> RayDirections;
 	FCollisionShape GetPerceptionShape() const;
@@ -42,6 +54,10 @@ public:
 	/** 目标 Actor（设置后会将其根组件自动赋给 TargetComponent） */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
 	AActor* TargetActor = nullptr;
+
+	/** 导航立方体的前向轴，默认 +Y 与机器人坐标系保持一致 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup|Axes")
+	ENavigationForwardAxis ForwardAxis = ENavigationForwardAxis::PlusY;
 
 	/** 立方体初始 Transform，Reset 时恢复 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Navigation|Setup")
@@ -300,4 +316,5 @@ public:
 
 private:
 	EAgentStatus AgentStatus = EAgentStatus::Running;
+	bool bEnvConfigLoaded = false;
 };

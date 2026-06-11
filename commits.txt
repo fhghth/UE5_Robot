@@ -1,0 +1,269 @@
+commit 82aa0484480ff1ccc12a4efdeb7833cb1f93581e
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 27 19:56:01 2026 +0800
+
+    观测维度加入足部，奖励函数修改
+
+commit 093a85dea5a41cb57bc4c9739694ca4b71dddee0
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 27 19:52:24 2026 +0800
+
+    目标点可选择场景中component扩展
+
+commit c0e74f2b06377d5376203cd302dd71a683c24832
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:50:39 2026 +0800
+
+    蓝图及场景更新
+
+commit 57229b06634a403ef8b78bccb14d9cca984645b9
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:49:38 2026 +0800
+
+    c++ build文件更新
+
+commit 2892a4e63cc7f7d4933f53b9734f87fb8cca3e95
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:48:31 2026 +0800
+
+    新增模型导出ONNX脚本及测试检查脚本
+
+commit 11534c6f1474b71b751d5641ed5feb67553ba293
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:47:26 2026 +0800
+
+    新增桥接类
+
+commit 5e914c6df4e4b1ad8bf8dbf513aea26ef1220c9a
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:45:21 2026 +0800
+
+    机器人训练脚本更新对接导航2维输入
+
+commit 7cf89ff78cabf8ffb26ee19205bb9e59e64e5c1d
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:43:53 2026 +0800
+
+    导航训练函数更新改为前进加转向
+
+commit a28bb0763e30c170f1cff4a7d1c19f0d12f7760e
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 26 14:42:24 2026 +0800
+
+    训练脚本增加更全面的监测
+
+commit 686d66ddd8cb3209eeddc83d2a2e80f789330c53
+Author: yellow <yellow@yishijie.com>
+Date:   Thu Apr 23 15:50:27 2026 +0800
+
+    机器人结构修改
+
+commit 161788fb21785093350bd363b2ee316ce1c98c17
+Author: yellow <yellow@yishijie.com>
+Date:   Wed Apr 15 09:46:36 2026 +0800
+
+    站立训练策略优化
+
+commit be817407abb01b2d8ae2b4c40da8ae76c747d033
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 13 11:25:04 2026 +0800
+
+    模型存贮更新
+
+commit 4aad75b6b24e88f0246c6ceca0f623b0a3de299e
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 13 11:23:20 2026 +0800
+
+    模型保存路径修改
+
+commit b00b80f6fca8d0e11fbed96be4650b2678f77d73
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 13 11:03:23 2026 +0800
+
+    第一版导航模型
+
+commit 988528a4b6d59a284a8a7d1ebbe2367d8a3f4c8b
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 13 10:58:28 2026 +0800
+
+    射线形态修改为sweep，调整蓝图对应参数
+
+commit 779d90d10096ab9103323d16c4435c9275b4564b
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 13 10:54:29 2026 +0800
+
+    射线形态修改为sweep
+
+commit 9e9534dabf20705800e93ee8ff59d96272744107
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 12 18:22:02 2026 +0800
+
+    奖励函数优化，加入目标方向射线及通路扩展奖励
+
+commit 27f591c83f25ce82439e65d373cef20e7ee869ef
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Apr 11 15:19:07 2026 +0800
+
+    导航训练相关参数修改
+
+commit 8b93d1ef0cf3c1ec6068149931d3b578a1484dda
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Apr 11 15:17:59 2026 +0800
+
+    起点终点独立
+
+commit 2806836b7ec86938ed954a029a035089481d8b7f
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Apr 11 15:17:07 2026 +0800
+
+    独立迷宫蓝图
+
+commit 66a1e05dafeed7e7553110065032ac1ab8d556e3
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Apr 11 15:16:20 2026 +0800
+
+    导航环境修改
+
+commit 0f385be6c47b360136381d6c717939f94ddc8b37
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 10 10:34:24 2026 +0800
+
+    新增导航训练关卡
+
+commit 4ea911e5f1b96a22d3bc989f713bb865265e7e61
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 10 10:33:34 2026 +0800
+
+    新增导航立方体蓝图
+
+commit 2ae3a20de4a9d7c1106febffb60a816ad1ee9fa9
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 10 10:31:54 2026 +0800
+
+    新增导航策略训练脚本
+
+commit 048648fcf26c6c03ffac34b04b8f726ac491ae98
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 16:43:38 2026 +0800
+
+    蓝图Reset配套修改及增加初始化Transform
+
+commit 1d58527a7460685fe7cbe0f8c5e2276b7c67ce37
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 16:42:35 2026 +0800
+
+    增加LinksTransform用于Reset
+
+commit be48194975ddfacbda33ecb9a6ac314a39fccdbb
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 16:40:58 2026 +0800
+
+    手动配置reset尝试
+
+commit fbd3285d924ae3a858c25d0fba2980b9ea1223f8
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 14:01:28 2026 +0800
+
+    采用力模式角发动机训练，匹配驱动参数
+
+commit 10a9ed76043c460944d5cca8e3fe273ceaef8952
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 13:59:19 2026 +0800
+
+    增加多轴动作维度动态获取
+
+commit e77ccb0b6764e89f7073a6fa87b792b9cb76a9f2
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 13:56:07 2026 +0800
+
+    优化训练脚本保存逻辑
+
+commit 08ee6e6b2a1e25a1f853258a09f0ab065bb2903d
+Author: yellow <yellow@yishijie.com>
+Date:   Mon Apr 6 10:38:49 2026 +0800
+
+    机器人模型约束优化
+
+commit 82205759470ccc4281c77b2fb234126f06bdd2aa
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 5 18:49:25 2026 +0800
+
+    角驱动模式修改
+
+commit 231e2fe2ef1e1a6c02727144905cf8697d2e7a6a
+Author: yellow <yellow@yishijie.com>
+Date:   Sun Apr 5 10:20:57 2026 +0800
+
+    启用GPU训练
+
+commit 1cf6fbc3c5f066d1ef1dbfbd7e2668806f2fa713
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 3 16:59:46 2026 +0800
+
+    打通训练路径
+
+commit 1c578a86c633a9ce3d90d7e9f3ea2bf00c46de96
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 3 11:09:47 2026 +0800
+
+    Schola插件更新
+
+commit 05a91989888beb4ff3c2ea532701c7af8035c4e7
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Apr 3 11:07:54 2026 +0800
+
+    第一版python训练脚本
+
+commit 0f3c4a1e031f995b8961b6215bcedfab88dc3ecd
+Author: yellow <yellow@yishijie.com>
+Date:   Thu Apr 2 13:49:46 2026 +0800
+
+    修改GetObservationSpace、GetActionSpace、InitializeEnvironment、Step、Reset
+
+commit 8edd0fc5319231378fa922494bc4b5d90f9faa72
+Author: yellow <yellow@yishijie.com>
+Date:   Wed Apr 1 12:41:23 2026 +0800
+
+    初步完成Env蓝图
+
+commit c2719674237101c7e226e2da1c521ed451f2046f
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Mar 28 10:23:03 2026 +0800
+
+    添加ComputeReward计算奖励蓝图
+
+commit fc04635882e98a2cb65c0dc0b5707793269a2204
+Author: yellow <yellow@yishijie.com>
+Date:   Sat Mar 28 10:03:17 2026 +0800
+
+    编码格式更改
+
+commit 405d1df0e9eb36025a26f8aa53ed26bcbca7e724
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Mar 27 19:22:00 2026 +0800
+
+    OrangeRobotEnv环境重建，LFS规则完善
+
+commit 6a608cc355a91f9c597814f3d4809af9b3d42f34
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Mar 27 15:59:48 2026 +0800
+
+    添加LFS,大文件支持
+
+commit 1b9d943ebe0db5c205ab795bbfaef4d62c9ac58e
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Mar 27 15:45:47 2026 +0800
+
+    中文编码
+
+commit 7900d6d0a605d3e93a82cf3383a45090dde4d2ec
+Author: yellow <yellow@yishijie.com>
+Date:   Fri Mar 27 15:23:54 2026 +0800
+
+    项目迁移
+
+commit bf51c12845ed6e91919112b4e76b7805d06f0bc6
+Author: 藤田洛洛子 <13366516+g1401674335@user.noreply.gitee.com>
+Date:   Fri Mar 27 05:50:49 2026 +0000
+
+    Initial commit

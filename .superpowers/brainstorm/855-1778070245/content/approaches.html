@@ -1,0 +1,86 @@
+<h2>三种方案对比</h2>
+<p class="subtitle">目标：动态步行 10-80 cm/s，95%+ 不摔倒，姿态稳定。最小改动，不过度设计。</p>
+
+<div class="options" data-multiselect>
+  <div class="option" data-choice="a">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>纯参数调优</h3>
+      <p>不动 C++ 代码，只通过前端/EnvConfig 调参</p>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>改动</h4>
+          <ul>
+            <li>HeightRewardScale 0.08 → 0.25</li>
+            <li>AliveReward 0.1 → 0.06</li>
+            <li>HeightDropPenaltyScale 0.5 → 1.5</li>
+            <li>BodyHeightRewardMax → 实际站高</li>
+            <li>BodyHeightThreshold 45 → 60</li>
+            <li>TrunkTiltPenaltyScale 0.05 → 0.15</li>
+            <li>站立阶段延长到 300K 步</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>风险</h4>
+          <ul>
+            <li>膝关节弯曲问题无直接信号</li>
+            <li>网络可能找到其他作弊策略</li>
+            <li>参数耦合度高，调参空间大</li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary,#6b6b6b);">代码改动：0 行 C++。风险最低但可能治标不治本。</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>最小奖励手术 ★ 推荐</h3>
+      <p>新增 2 个奖励分量 + 参数调整</p>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>改动</h4>
+          <ul>
+            <li><strong>新增：膝关节伸展奖励</strong> — 膝盖越直奖励越高，直接对抗蹲姿</li>
+            <li><strong>新增：倾倒预警</strong> — 倾斜超过阈值50%时线性预警</li>
+            <li>Height 惩罚区下边界提升 (85%→90%)</li>
+            <li>Alive 倾斜门控：uprightDot &lt; 0.7 时 Alive=0</li>
+            <li>全部参数调整（同方案A）</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>风险</h4>
+          <ul>
+            <li>2 个新 UPROPERTY 加入 EnvConfigLoader 白名单</li>
+            <li>观测空间不变，无需重新设计网络</li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary,#6b6b6b);">代码改动：~30 行 C++，2 个新参数。用最小代价直击要害。</p>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>CoM + 姿态重设计</h3>
+      <p>新增观测维度 + 多分量重构</p>
+      <div class="pros-cons" style="margin-top:12px;">
+        <div class="pros"><h4>改动</h4>
+          <ul>
+            <li>观测空间 +4：膝关节角度 (左/右) + CoM 投影 XY</li>
+            <li>奖励重构：以 CoM 稳定性为核心的评估体系</li>
+            <li>新增重心投影惩罚、ZMP 近似约束</li>
+            <li>全部方案B内容也包含</li>
+          </ul>
+        </div>
+        <div class="cons"><h4>风险</h4>
+          <ul>
+            <li>观测维度变化 → 网络需要重新训练</li>
+            <li>CoM/ZMP 计算增加每帧开销</li>
+            <li>改动量大，调试周期长</li>
+            <li>违反 "不过度设计" 原则</li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--color-text-secondary,#6b6b6b);">代码改动：~100 行 C++，5+ 新参数。理论最完备但工程成本最高。</p>
+    </div>
+  </div>
+</div>

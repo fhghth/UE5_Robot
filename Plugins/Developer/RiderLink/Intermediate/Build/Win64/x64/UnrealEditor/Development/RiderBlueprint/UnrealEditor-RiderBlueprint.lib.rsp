@@ -1,0 +1,13 @@
+/NOLOGO
+/errorReport:prompt
+/MACHINE:x64
+/SUBSYSTEM:WINDOWS
+/DEF
+/NAME:"UnrealEditor-RiderBlueprint.dll"
+/IGNORE:4221
+/NODEFAULTLIB
+"D:/uePro/OrangeRobot/Plugins/Developer/RiderLink/Intermediate/Build/Win64/x64/UnrealEditor/Development/RiderBlueprint/BlueprintProvider.cpp.obj"
+"D:/uePro/OrangeRobot/Plugins/Developer/RiderLink/Intermediate/Build/Win64/x64/UnrealEditor/Development/RiderBlueprint/RiderBlueprint.cpp.obj"
+"D:/uePro/OrangeRobot/Plugins/Developer/RiderLink/Intermediate/Build/Win64/x64/UnrealEditor/Development/RiderBlueprint/PerModuleInline.gen.cpp.obj"
+"D:/uePro/OrangeRobot/Plugins/Developer/RiderLink/Intermediate/Build/Win64/x64/UnrealEditor/Development/RiderBlueprint/Default.rc2.res"
+/OUT:"D:/uePro/OrangeRobot/Plugins/Developer/RiderLink/Intermediate/Build/Win64/x64/UnrealEditor/Development/RiderBlueprint/UnrealEditor-RiderBlueprint.lib"
