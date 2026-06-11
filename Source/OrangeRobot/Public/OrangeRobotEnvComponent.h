@@ -88,6 +88,7 @@ struct FOrangeRobotRewardComponents
     //躯干稳定惩罚
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
     float TrunkStabilityPenalty = 0.0f;
+<<<<<<< HEAD
 
     //膝关节伸展惩罚
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
@@ -96,6 +97,8 @@ struct FOrangeRobotRewardComponents
     //倾倒预警
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
     float TiltWarning = 0.0f;
+=======
+>>>>>>> worktree-training-stability-fixes
 };
 
 UENUM(BlueprintType, meta=(Bitflags))
@@ -166,7 +169,10 @@ class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent, public 
 
 public:
     UOrangeRobotEnvComponent();
+<<<<<<< HEAD
     virtual void BeginPlay() override;
+=======
+>>>>>>> worktree-training-stability-fixes
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     // ========================================================================
@@ -211,7 +217,10 @@ public:
 private:
     float InitialLeftFootDistance = 0.0f;
     float InitialRightFootDistance = 0.0f;
+<<<<<<< HEAD
     bool bEnvConfigLoadedFromCommandLine = false;
+=======
+>>>>>>> worktree-training-stability-fixes
 
 public:
     // ========================================================================
@@ -288,10 +297,14 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float AliveReward = 0.02f;
+<<<<<<< HEAD
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training", meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float TiltQualityGate = 0.7f;
 
+=======
+    
+>>>>>>> worktree-training-stability-fixes
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float StableDoubleSupportRewardScale = 0.1f;
 
@@ -344,6 +357,7 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float HeightDropPenaltyScale = 0.5f;
+<<<<<<< HEAD
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float KneeExtensionPenaltyScale = 0.001f;
@@ -351,6 +365,9 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TiltWarningScale = 1.0f;
 
+=======
+    
+>>>>>>> worktree-training-stability-fixes
     /*躯干稳定参数*/
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TrunkTiltPenaltyScale = 0.1f;
@@ -443,12 +460,15 @@ public:
     int32 FallPenaltyHorizon = 5;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+<<<<<<< HEAD
     float RewardClampMin = -2.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float RewardClampMax = 2.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+=======
+>>>>>>> worktree-training-stability-fixes
     float BodyHeightThreshold = 45.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
