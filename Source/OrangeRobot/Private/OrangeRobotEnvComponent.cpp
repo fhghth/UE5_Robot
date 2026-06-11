@@ -13,7 +13,10 @@
 #include "HAL/PlatformFilemanager.h"
 #include "UObject/FieldIterator.h"
 #include "JsonObjectConverter.h"  
+<<<<<<< HEAD
 #include "EnvConfigLoader.h"
+=======
+>>>>>>> worktree-training-stability-fixes
 
 namespace
 {
@@ -160,6 +163,7 @@ UOrangeRobotEnvComponent::UOrangeRobotEnvComponent()
     PrimaryComponentTick.bCanEverTick = true;
 }
 
+<<<<<<< HEAD
 void UOrangeRobotEnvComponent::BeginPlay()
 {
     Super::BeginPlay();
@@ -318,6 +322,148 @@ void UOrangeRobotEnvComponent::TickComponent(float DeltaTime, ELevelTick TickTyp
 #endif
 }
 
+=======
+//一键导出参数
+void UOrangeRobotEnvComponent::ExportAllConfigToJSON()
+{
+    TSharedRef<FJsonObject> RootObject = MakeShared<FJsonObject>();
+
+    // 遍历自身及父类的所有属性（UE 反射）
+    for (TFieldIterator<FProperty> PropIt(GetClass()); PropIt; ++PropIt)
+    {
+        FProperty* Prop = *PropIt;
+        FString PropName = Prop->GetName();
+        const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(this);
+
+        TSharedPtr<FJsonValue> JsonValue;
+
+        // 常见基础类型
+        if (const FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+        {
+            JsonValue = MakeShared<FJsonValueBoolean>(BoolProp->GetPropertyValue(ValuePtr));
+        }
+        else if (const FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop))
+        {
+            JsonValue = MakeShared<FJsonValueNumber>(FloatProp->GetPropertyValue(ValuePtr));
+        }
+        else if (const FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop))
+        {
+            JsonValue = MakeShared<FJsonValueNumber>(DoubleProp->GetPropertyValue(ValuePtr));
+        }
+        else if (const FIntProperty* IntProp = CastField<FIntProperty>(Prop))
+        {
+            JsonValue = MakeShared<FJsonValueNumber>(IntProp->GetPropertyValue(ValuePtr));
+        }
+        else if (const FStrProperty* StrProp = CastField<FStrProperty>(Prop))
+        {
+            JsonValue = MakeShared<FJsonValueString>(StrProp->GetPropertyValue(ValuePtr));
+        }
+        // 对象/组件引用（输出路径名）
+        else if (const FObjectProperty* ObjProp = CastField<FObjectProperty>(Prop))
+        {
+            UObject* Obj = ObjProp->GetObjectPropertyValue(ValuePtr);
+            JsonValue = MakeShared<FJsonValueString>(Obj ? Obj->GetPathName() : TEXT("None"));
+        }
+        // 常见结构体
+        else if (const FStructProperty* StructProp = CastField<FStructProperty>(Prop))
+        {
+            if (StructProp->Struct == TBaseStructure<FVector>::Get())
+            {
+                const FVector* Vec = Prop->ContainerPtrToValuePtr<FVector>(this);
+                JsonValue = MakeShared<FJsonValueString>(Vec->ToString());
+            }
+            else if (StructProp->Struct == TBaseStructure<FVector2D>::Get())
+            {
+                const FVector2D* Vec2 = Prop->ContainerPtrToValuePtr<FVector2D>(this);
+                JsonValue = MakeShared<FJsonValueString>(Vec2->ToString());
+            }
+            else if (StructProp->Struct == TBaseStructure<FRotator>::Get())
+            {
+                const FRotator* Rot = Prop->ContainerPtrToValuePtr<FRotator>(this);
+                JsonValue = MakeShared<FJsonValueString>(Rot->ToString());
+            }
+            else if (StructProp->Struct == TBaseStructure<FTransform>::Get())
+            {
+                const FTransform* Trans = Prop->ContainerPtrToValuePtr<FTransform>(this);
+                JsonValue = MakeShared<FJsonValueString>(Trans->ToString());
+            }
+            else
+            {
+                // 其他结构体，尝试导出为 JSON 对象
+                TSharedRef<FJsonObject> SubObj = MakeShared<FJsonObject>();
+                if (FJsonObjectConverter::UStructToJsonObject(StructProp->Struct, ValuePtr, SubObj))
+                {
+                    JsonValue = MakeShared<FJsonValueObject>(SubObj);
+                }
+                else
+                {
+                    JsonValue = MakeShared<FJsonValueString>(TEXT("<ComplexStruct>"));
+                }
+            }
+        }
+        // 数组（简单序列化为字符串，或可进一步展开）
+        else if (const FArrayProperty* ArrayProp = CastField<FArrayProperty>(Prop))
+        {
+            FScriptArrayHelper Helper(ArrayProp, ValuePtr);
+            TArray<FString> Elements;
+            for (int32 i = 0; i < Helper.Num(); ++i)
+            {
+                // 对于 float/int 数组可转数值，这里简化处理
+                Elements.Add(TEXT("<element>"));
+            }
+            JsonValue = MakeShared<FJsonValueString>(
+                FString::Printf(TEXT("[Array of %d elements]"), Helper.Num()));
+        }
+        else
+        {
+            JsonValue = MakeShared<FJsonValueString>(TEXT("<Unsupported type>"));
+        }
+
+        if (JsonValue.IsValid())
+        {
+            RootObject->SetField(PropName, JsonValue);
+        }
+    }
+
+    // 序列化 JSON
+    FString JsonString;
+    TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
+        TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&JsonString);
+    FJsonSerializer::Serialize(RootObject, Writer);
+
+    // 保存到项目目录/Logs
+    FString LogDir = FPaths::ProjectDir() / TEXT("Logs");
+    IFileManager::Get().MakeDirectory(*LogDir, true);  // 确保目录存在
+
+    FDateTime Now = FDateTime::Now();
+    FString FileName = FString::Printf(TEXT("ConfigExport_%s.json"),
+        *Now.ToString(TEXT("%Y%m%d_%H%M%S")));
+    FString FullPath = LogDir / FileName;
+
+    bool bSaved = FFileHelper::SaveStringToFile(JsonString, *FullPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
+    if (bSaved)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("Config exported successfully -> %s"), *FullPath);
+    }
+    else
+    {
+        UE_LOG(LogTemp, Error, TEXT("Failed to save config to %s"), *FullPath);
+    }
+
+    // 同时输出到 Output Log
+    UE_LOG(LogTemp, Warning, TEXT("=========== Full Config JSON ===========\n%s\n========================================"), *JsonString);
+}
+
+void UOrangeRobotEnvComponent::TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction)
+{
+    Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
+#if WITH_EDITOR
+    if (bEnableHighLevelCommand) DrawHighLevelCommandDebug();
+    DrawRobotCoordinateAxes();
+#endif
+}
+
+>>>>>>> worktree-training-stability-fixes
 #if WITH_EDITOR
 //命令调试
 void UOrangeRobotEnvComponent::DrawHighLevelCommandDebug() const
@@ -748,6 +894,7 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
     TArray<float> CurrentAction;
     CurrentAction.Init(0.0f, ExpectedDim);
 
+<<<<<<< HEAD
     // L2-norm clamp: scale down all actions proportionally when the policy
     // tries to drive all joints at max speed simultaneously. Prevents Chaos
     // solver from spending excessive sub-iterations per physics step.
@@ -762,6 +909,43 @@ void UOrangeRobotEnvComponent::ApplyAction(const TArray<float>& Action)
             const float Scale = MaxActionNorm / ActionNorm;
             for (float& V : ClampedRawAction) V *= Scale;
         }
+=======
+    int32 ActionIndex = 0;
+    for (int32 JointIdx = 0; JointIdx < DriveConstraints.Num(); ++JointIdx)
+    {
+        UPhysicsConstraintComponent* Con = DriveConstraints[JointIdx];
+        if (!Con || !JointAxisCaches.IsValidIndex(JointIdx)) continue;
+
+        const FOrangeRobotConstraintAxisCache& Cache = JointAxisCaches[JointIdx];
+        FVector TargetVel = FVector::ZeroVector;
+
+        auto ConsumeAction = [&](double& OutVel, float Limit)
+        {
+            if (!CurrentAction.IsValidIndex(ActionIndex)) { ++ActionIndex; return; }
+            float Val = Action.IsValidIndex(ActionIndex) ? FMath::Clamp(Action[ActionIndex], -1.0f, 1.0f) : 0.0f;
+            if (FMath::Abs(Val) < ActionDeadzone) Val = 0.0f;
+            else Val = ShapeNormalizedAction(Val, ActionResponseExponent);
+            CurrentAction[ActionIndex] = Val;
+            OutVel = SanitizeFiniteScalar(Val * JointVelocityScale, -Limit, Limit);
+            ++ActionIndex;
+        };
+
+        if (Cache.bUseTwist)  ConsumeAction(TargetVel.X, TwistVelocityLimit);
+        if (Cache.bUseSwing1) ConsumeAction(TargetVel.Y, SwingVelocityLimit);
+        if (Cache.bUseSwing2) ConsumeAction(TargetVel.Z, SwingVelocityLimit);
+
+        Con->SetAngularVelocityTarget(ClampAngularVelocityTarget(TargetVel));
+    }
+
+    PreviousAction = LastAction;
+    LastAction = MoveTemp(CurrentAction);
+    CurrentStep++;
+
+    if (bEnableCurriculum)
+    {
+        ++GlobalTrainingStep;
+        UpdateCurriculumWeightsAndCommand();
+>>>>>>> worktree-training-stability-fixes
     }
 
     int32 ActionIndex = 0;
@@ -987,6 +1171,7 @@ float UOrangeRobotEnvComponent::ComputeReward()
     // 3.1 Alive（CORE / 正奖励）
     // --------------------------
     APPLY_REWARD_CORE(ERewardGroupCore::Alive, {
+<<<<<<< HEAD
     if (UprightDot < TiltQualityGate)
     {
         // 倾斜超过门控阈值：当帧不给存活奖励
@@ -1018,6 +1203,36 @@ float UOrangeRobotEnvComponent::ComputeReward()
         // // 范围：[AliveReward, 2 * AliveReward]
         Components.Alive = AliveReward * (1.0f + StandStability);
     }
+=======
+    float StandStability = 0.0f;
+    
+    if (bHasSupport && !bFallen)
+    {
+        // 1) 直立质量：越直立越接近 1.0
+        const float TiltQuality = FMath::Clamp(UprightDot, 0.0f, 1.0f);
+        
+        // 2) 垂直颠簸惩罚：上下抖动越厉害越接近 0
+        float VerticalSpeedCm = 0.0f;
+        if (TrunkComp)
+        {
+            VerticalSpeedCm = FMath::Abs(
+                FVector::DotProduct(TrunkComp->GetComponentVelocity(), FVector::UpVector));
+        }
+        const float VelQuality = FMath::Clamp(
+            1.0f - (VerticalSpeedCm / 20.0f), 0.0f, 1.0f);
+        
+        // 3) 综合稳定性（两项同时好才给高奖励）
+        StandStability = TiltQuality * VelQuality;
+    }
+        
+        // 范围：[0.5 * AliveReward, 1.5 * AliveReward]
+    // Components.Alive = AliveReward * FMath::Lerp(0.5f, 1.5f, StandStability);
+    
+    // // 基线奖励 + 稳定性加成
+    // // 范围：[AliveReward, 2 * AliveReward]
+    Components.Alive = AliveReward * (1.0f + StandStability);
+        
+>>>>>>> worktree-training-stability-fixes
 });
 
     // // --------------------------
@@ -1119,6 +1334,7 @@ float UOrangeRobotEnvComponent::ComputeReward()
         float SupportReward = 0.0f;
         float GaitReward    = 0.0f;
 
+<<<<<<< HEAD
         // --- 膝关节伸展惩罚：右膝[5] 左膝[11]，Swing1=轴1，弯曲越深惩罚越重
         {
             const int32 RightKneeIdx = 5;
@@ -1142,6 +1358,14 @@ float UOrangeRobotEnvComponent::ComputeReward()
         // --- 步态交替 + 步频
         if (bSingleSupport)
         {
+=======
+        // --- 步态质量负项：双脚拖地/乱蹭（平方惩罚）
+        GaitReward -= (LSlide * LSlide + RSlide * RSlide) * DualFootShufflePenaltyScale * 0.1f;
+
+        // --- 步态交替 + 步频
+        if (bSingleSupport)
+        {
+>>>>>>> worktree-training-stability-fixes
             const ESupportSide CurrentSingleSide = bLStable ? ESupportSide::Left : ESupportSide::Right;
 
             if (LastSingleSupportSide != ESupportSide::None && LastSingleSupportSide != CurrentSingleSide)
@@ -1317,6 +1541,7 @@ float UOrangeRobotEnvComponent::ComputeReward()
             VerticalVelPenalty = FMath::Min(FMath::Square(ExcessCm) * TrunkVerticalVelocityPenaltyScale,VertVelPenaltyMax);
         }
 
+<<<<<<< HEAD
         // --- 倾倒预警：倾斜角度超过倒地阈值50%时开始预警 ---
         float TiltWarningVal = 0.0f;
         {
@@ -1335,6 +1560,10 @@ float UOrangeRobotEnvComponent::ComputeReward()
         APPLY_REWARD_CORE(ERewardGroupCore::TrunkStability, {
             Components.TrunkStabilityPenalty = -(TiltPenalty + AngVelXYPenalty + VerticalVelPenalty);
             Components.TiltWarning = TiltWarningVal;
+=======
+        APPLY_REWARD_CORE(ERewardGroupCore::TrunkStability, {
+            Components.TrunkStabilityPenalty = -(TiltPenalty + AngVelXYPenalty + VerticalVelPenalty);
+>>>>>>> worktree-training-stability-fixes
         });
     }
 
@@ -1442,7 +1671,13 @@ float UOrangeRobotEnvComponent::ComputeReward()
         const int32 RemainingSteps = FMath::Max(0, MaxSteps - CurrentStep);
         const int32 PenaltySteps   = FMath::Min(RemainingSteps, FMath::Max(FallPenaltyHorizon, 1));
 
+<<<<<<< HEAD
         // Curriculum-dependent fall penalty scaling
+=======
+        // Stage-dependent scaling: full penalty only after stage 1 (standing established)
+        // Stage 0: 20% of full penalty — don't punish falls during standing learning
+        // Stage 1+: linearly ramp to full penalty by stage 2
+>>>>>>> worktree-training-stability-fixes
         const float FallScale = (CurrentCurriculumStage == 0) ? 0.2f
                               : (CurrentCurriculumStage == 1) ? 0.5f
                               : 1.0f;
@@ -1464,13 +1699,19 @@ float UOrangeRobotEnvComponent::ComputeReward()
         + Components.StableDoubleSupport
         + Components.SupportStability
         + Components.GaitQuality
+<<<<<<< HEAD
         + Components.KneeExtensionPenalty
+=======
+>>>>>>> worktree-training-stability-fixes
         + Components.CommandTracking
         + Components.ActionSmooth
         + Components.EnergyPenalty
         + Components.StepAlternation
         + Components.TrunkStabilityPenalty
+<<<<<<< HEAD
         + Components.TiltWarning
+=======
+>>>>>>> worktree-training-stability-fixes
         + Components.FootImpactPenalty
         + Components.SymmetryPenalty
         + Components.StepFrequencyReward
@@ -1482,6 +1723,7 @@ float UOrangeRobotEnvComponent::ComputeReward()
     if (bLogRewardBreakdown && CurrentStep > 0 && (CurrentStep % 10) == 0)
     {
         UE_LOG(LogTemp, Log,
+<<<<<<< HEAD
     TEXT("RewardBreakdown Step=%d Core=0x%08X Gait=0x%08X Reg=0x%08X Total=%.4f | Alive=%.4f Height=%.4f Lat=%.4f StableDS=%.4f Support=%.4f Gait=%.4f Knee=%.4f Cmd=%.4f Smooth=%.4f Energy=%.4f StepAlt=%.4f TrunkSP=%.4f TiltWarn=%.4f Impact=%.4f Sym=%.4f StepFreq=%.4f CoT=%.4f Fall=%.4f"),
     CurrentStep, RewardMaskCore, RewardMaskGait, RewardMaskReg, Components.Total,
     Components.Alive, Components.Height, Components.LateralPenalty,
@@ -1490,6 +1732,14 @@ float UOrangeRobotEnvComponent::ComputeReward()
     Components.CommandTracking, Components.ActionSmooth,
     Components.EnergyPenalty, Components.StepAlternation, Components.TrunkStabilityPenalty,
     Components.TiltWarning,
+=======
+    TEXT("RewardBreakdown Step=%d Core=0x%08X Gait=0x%08X Reg=0x%08X Total=%.4f | Alive=%.4f Height=%.4f Lat=%.4f StableDS=%.4f Support=%.4f Gait=%.4f Cmd=%.4f Smooth=%.4f Energy=%.4f StepAlt=%.4f TrunkSP=%.4f Impact=%.4f Sym=%.4f StepFreq=%.4f CoT=%.4f Fall=%.4f"),
+    CurrentStep, RewardMaskCore, RewardMaskGait, RewardMaskReg, Components.Total,
+    Components.Alive, Components.Height, Components.LateralPenalty,
+    Components.StableDoubleSupport,
+    Components.SupportStability, Components.GaitQuality, Components.CommandTracking, Components.ActionSmooth,
+    Components.EnergyPenalty, Components.StepAlternation, Components.TrunkStabilityPenalty,
+>>>>>>> worktree-training-stability-fixes
     Components.FootImpactPenalty, Components.SymmetryPenalty, Components.StepFrequencyReward,
     Components.CostOfTransportPenalty, Components.FallTerminal);
     }
@@ -1510,7 +1760,11 @@ float UOrangeRobotEnvComponent::ComputeReward()
     const float StepsPerCycle = FMath::Max(DesiredStepPeriod * SimulationFrequencyHz, 1.0f);
     GaitPhase = FMath::Fmod(CurrentStep * 2.0f * PI / StepsPerCycle, 2.0f * PI);
 
+<<<<<<< HEAD
     return FMath::Clamp(Components.Total, RewardClampMin, RewardClampMax);
+=======
+    return Components.Total;
+>>>>>>> worktree-training-stability-fixes
 }
 
 // ---------------------------------------------------------------------------
@@ -1615,6 +1869,7 @@ void UOrangeRobotEnvComponent::SetStatus_Implementation(EAgentStatus NewStatus) 
 
 void UOrangeRobotEnvComponent::Define_Implementation(FInteractionDefinition& OutInteractionDefinition)
 {
+<<<<<<< HEAD
     if (JointAxisCaches.IsEmpty() || JointActionAxes.IsEmpty())
     {
         CacheJointActionAxes();
@@ -1624,6 +1879,10 @@ void UOrangeRobotEnvComponent::Define_Implementation(FInteractionDefinition& Out
 
     UE_LOG(LogTemp, Warning, TEXT("[Define] ObsDim=%d, ActDim=%d, JointAxisCount=%d, DriveConstraints=%d, bEnableCmd=%d"),
         ObsDim, ActDim, JointActionAxes.Num(), DriveConstraints.Num(), bEnableCommandReward ? 1 : 0);
+=======
+    const int32 ObsDim = GetObservationDim();
+    const int32 ActDim = GetActionDim();
+>>>>>>> worktree-training-stability-fixes
     TArray<float> ObsLow, ObsHigh, ActLow, ActHigh;
     ObsLow.Init(-5.0f, ObsDim);  ObsHigh.Init(5.0f, ObsDim);
     ActLow.Init(-1.0f, ActDim);  ActHigh.Init(1.0f, ActDim);
