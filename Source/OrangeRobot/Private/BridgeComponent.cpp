@@ -2,9 +2,15 @@
 #include "OrangeRobotEnvComponent.h"
 #include "XNavigationCubeEnvComponent.h"
 #include "Components/SceneComponent.h"
+#include "EngineUtils.h"
 #include "GameFramework/Actor.h"
 #include "Logging/LogMacros.h"
 #include "Policies/PolicyInterface.h"
+#include "Misc/CommandLine.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Parse.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 
 ABridgeComponent::ABridgeComponent()
 {
@@ -15,13 +21,14 @@ void ABridgeComponent::BeginPlay()
 {
 	Super::BeginPlay();
 
+	ApplyDeployConfigIfPresent();
+
 	if (!RobotActor)
 	{
 		UE_LOG(LogTemp, Error, TEXT("[BridgePawn] RobotActor is null!"));
 		return;
 	}
 
-	// 获取机器人组件
 	EnvComp = RobotActor->FindComponentByClass<UOrangeRobotEnvComponent>();
 	if (!EnvComp)
 	{
@@ -34,13 +41,73 @@ void ABridgeComponent::BeginPlay()
 	{
 		UE_LOG(LogTemp, Warning, TEXT("[BridgePawn] No XNavigationCubeEnvComponent found on RobotActor."));
 	}
-	else if (TargetActor)
+	else
 	{
-		NavigationComp->TargetComponent = TargetActor->GetRootComponent();
+		if (TargetActor)
+		{
+			NavigationComp->TargetComponent = TargetActor->GetRootComponent();
+		}
+		if (!NavigationComp->CubeComponent)
+		{
+			NavigationComp->CubeComponent = EnvComp->BodyLinks.Num() > 0
+				? Cast<UPrimitiveComponent>(EnvComp->BodyLinks[0])
+				: Cast<UPrimitiveComponent>(RobotActor->GetRootComponent());
+			UE_LOG(LogTemp, Log, TEXT("[BridgePawn] Auto-filled Nav CubeComponent=%s"),
+				NavigationComp->CubeComponent ? *NavigationComp->CubeComponent->GetName() : TEXT("null"));
+		}
 	}
 
-	// 配置环境组件以支持高层命令拼接
+	// // --- 部署兼容：无 RPC Connector 时自动从 Actor 组件层级填充关键引用 ---
+	// if (EnvComp->DriveConstraints.IsEmpty())
+	// {
+	// 	TArray<UPhysicsConstraintComponent*> Constraints;
+	// 	RobotActor->GetComponents<UPhysicsConstraintComponent>(Constraints);
+	// 	EnvComp->DriveConstraints = MoveTemp(Constraints);
+	// 	UE_LOG(LogTemp, Log, TEXT("[BridgePawn] Auto-filled DriveConstraints: %d"), EnvComp->DriveConstraints.Num());
+	// }
+	// if (EnvComp->BodyLinks.IsEmpty())
+	// {
+	// 	TArray<UStaticMeshComponent*> Meshes;
+	// 	RobotActor->GetComponents<UStaticMeshComponent>(Meshes);
+	// 	for (UStaticMeshComponent* M : Meshes)
+	// 	{
+	// 		if (!M) continue;
+	// 		if (M->GetName().Contains(TEXT("Foot")))
+	// 		{
+	// 			if (!EnvComp->FootL)      EnvComp->FootL = M;
+	// 			else if (!EnvComp->FootR) EnvComp->FootR = M;
+	// 		}
+	// 		else
+	// 		{
+	// 			EnvComp->BodyLinks.Add(M);
+	// 		}
+	// 	}
+	// 	UE_LOG(LogTemp, Log, TEXT("[BridgePawn] Auto-filled BodyLinks=%d FootL=%s FootR=%s"),
+	// 		EnvComp->BodyLinks.Num(),
+	// 		EnvComp->FootL ? *EnvComp->FootL->GetName() : TEXT("null"),
+	// 		EnvComp->FootR ? *EnvComp->FootR->GetName() : TEXT("null"));
+	// }
+	// if (!EnvComp->TiltCheckComponent)
+	// {
+	// 	TArray<USceneComponent*> Scenes;
+	// 	RobotActor->GetComponents<USceneComponent>(Scenes);
+	// 	for (USceneComponent* S : Scenes)
+	// 	{
+	// 		if (S && S->GetName().Contains(TEXT("Head")) && !EnvComp->HeadComponent)
+	// 			EnvComp->HeadComponent = S;
+	// 		if (S && S->GetName().Contains(TEXT("Tilt")) && !EnvComp->TiltCheckComponent)
+	// 			EnvComp->TiltCheckComponent = S;
+	// 	}
+	// 	if (!EnvComp->TiltCheckComponent && EnvComp->BodyLinks.Num() > 0)
+	// 		EnvComp->TiltCheckComponent = EnvComp->BodyLinks[0];
+	// 	UE_LOG(LogTemp, Log, TEXT("[BridgePawn] Auto-filled TiltCheck=%s Head=%s"),
+	// 		EnvComp->TiltCheckComponent ? *EnvComp->TiltCheckComponent->GetName() : TEXT("null"),
+	// 		EnvComp->HeadComponent ? *EnvComp->HeadComponent->GetName() : TEXT("null"));
+	// }
+	// // --- 部署兼容结束 ---
+
 	EnvComp->bEnableHighLevelCommand = true;
+	EnvComp->bEnableCommandReward = true;
 	EnvComp->ClearHighLevelCommand();
 	SmoothedCommand = FVector2D::ZeroVector;
 	TimeSinceLastHigh = HighInferenceInterval;
@@ -73,6 +140,77 @@ void ABridgeComponent::Tick(float DeltaTime)
 	}
 
 	StepLowLevelInference();
+}
+
+void ABridgeComponent::ApplyDeployConfigIfPresent()
+{
+	FString DeployConfigPath;
+	if (!FParse::Value(FCommandLine::Get(), TEXT("DeployConfig="), DeployConfigPath))
+	{
+		return;
+	}
+
+	FString JsonString;
+	if (!FFileHelper::LoadFileToString(JsonString, *DeployConfigPath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BridgePawn] Failed to load deploy config: %s"), *DeployConfigPath);
+		return;
+	}
+
+	TSharedPtr<FJsonObject> JsonObject;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonString);
+	if (!FJsonSerializer::Deserialize(Reader, JsonObject) || !JsonObject.IsValid())
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BridgePawn] Failed to parse deploy config JSON: %s"), *DeployConfigPath);
+		return;
+	}
+
+	const FString HighModelPath = JsonObject->GetStringField(TEXT("high_level_onnx_path"));
+	const FString LowModelPath = JsonObject->GetStringField(TEXT("low_level_onnx_path"));
+	const FString TargetActorName = JsonObject->GetStringField(TEXT("target_actor_name"));
+
+	if (!TargetActorName.IsEmpty())
+	{
+		for (TActorIterator<AActor> It(GetWorld()); It; ++It)
+		{
+			if (It->GetName() == TargetActorName)
+			{
+				TargetActor = *It;
+				break;
+			}
+		}
+	}
+
+	if (!HighModelPath.IsEmpty())
+	{
+		HighLevelModelData = LoadModelDataFromDisk(HighModelPath, RuntimeHighLevelModelData, TEXT("High"));
+	}
+
+	if (!LowModelPath.IsEmpty())
+	{
+		LowLevelModelData = LoadModelDataFromDisk(LowModelPath, RuntimeLowLevelModelData, TEXT("Low"));
+	}
+}
+
+UNNEModelData* ABridgeComponent::LoadModelDataFromDisk(const FString& ModelPath, UNNEModelData*& RuntimeModelStorage, const TCHAR* LogLabel)
+{
+	TArray64<uint8> FileData;
+	if (!FFileHelper::LoadFileToArray(FileData, *ModelPath))
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BridgePawn] %s-level model load failed: %s"), LogLabel, *ModelPath);
+		return nullptr;
+	}
+
+	RuntimeModelStorage = NewObject<UNNEModelData>(this);
+	if (!RuntimeModelStorage)
+	{
+		UE_LOG(LogTemp, Error, TEXT("[BridgePawn] %s-level runtime model data allocation failed."), LogLabel);
+		return nullptr;
+	}
+
+	RuntimeModelStorage->Init(TEXT("onnx"), TConstArrayView64<uint8>(FileData));
+	UE_LOG(LogTemp, Log, TEXT("[BridgePawn] %s-level ONNX loaded from disk: %s"), LogLabel, *ModelPath);
+	return RuntimeModelStorage;
 }
 
 void ABridgeComponent::InitPolicies()
@@ -161,8 +299,6 @@ void ABridgeComponent::StepHighLevelInference()
 	}
 
 	NavigationStepper->Step();
-
-	// 高层 Agent 在 Act 中写入 RawHighLevelCommand，这里统一做平滑后再下发给低层。
 	ApplySmoothCommand(NavigationComp->RawHighLevelCommand);
 	EnvComp->SetHighLevelCommand(SmoothedCommand);
 }
@@ -179,18 +315,15 @@ void ABridgeComponent::StepLowLevelInference()
 
 void ABridgeComponent::ApplySmoothCommand(const FVector2D& NewCommand)
 {
-	// 指数移动平均平滑
 	SmoothedCommand.X = CommandSmoothAlpha * NewCommand.X + (1.0f - CommandSmoothAlpha) * SmoothedCommand.X;
 	SmoothedCommand.Y = CommandSmoothAlpha * NewCommand.Y + (1.0f - CommandSmoothAlpha) * SmoothedCommand.Y;
 
-	// 可选：限制范围
 	SmoothedCommand.X = FMath::Clamp(SmoothedCommand.X, -1.0f, 1.0f);
 	SmoothedCommand.Y = FMath::Clamp(SmoothedCommand.Y, -1.0f, 1.0f);
 }
 
 void ABridgeComponent::SetTargetActor(AActor* NewTargetActor)
 {
-	TargetActor = NewTargetActor;
 	TargetActor = NewTargetActor;
 	if (NavigationComp)
 	{

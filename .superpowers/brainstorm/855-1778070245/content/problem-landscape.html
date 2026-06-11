@@ -1,0 +1,147 @@
+<h2>双足机器人当前行为 vs 奖励函数 — 问题全景</h2>
+<p class="subtitle">基于你的描述整理的三阶段行为链。每条链标注了驱动该行为的奖励分量。</p>
+
+<div class="section">
+  <h3>阶段 1：直立 → 蹲下（训练早期）</h3>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">行为链</div>
+  <div class="mockup-body">
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:8px 0;">
+      <div style="background:var(--color-dark,#1a1a19);color:white;padding:12px;border-radius:8px;text-align:center;min-width:80px;">
+        直立<br><small>90cm</small>
+      </div>
+      <span style="font-size:24px;">→</span>
+      <div style="background:#d97757;color:white;padding:12px;border-radius:8px;text-align:center;min-width:80px;">
+        微蹲<br><small>75cm</small>
+      </div>
+      <span style="font-size:24px;">→</span>
+      <div style="background:#c0392b;color:white;padding:12px;border-radius:8px;text-align:center;min-width:80px;">
+        深蹲<br><small>55cm</small>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:16px;">
+  <p><strong>奖励驱动逻辑：</strong></p>
+  <table>
+    <tr><th>分量</th><th>直立 (90cm)</th><th>微蹲 (75cm)</th><th>深蹲 (55cm)</th></tr>
+    <tr>
+      <td>Height</td>
+      <td style="color:#27ae60;">+0.08</td>
+      <td style="color:#e67e22;">-0.05</td>
+      <td style="color:#c0392b;">-0.17</td>
+    </tr>
+    <tr>
+      <td>Alive (稳定性)</td>
+      <td style="color:#e67e22;">+0.15</td>
+      <td style="color:#27ae60;">+0.18</td>
+      <td style="color:#27ae60;">+0.19</td>
+    </tr>
+    <tr>
+      <td>Energy (关节)</td>
+      <td style="color:#c0392b;">-0.003</td>
+      <td style="color:#e67e22;">-0.001</td>
+      <td style="color:#27ae60;">-0.000</td>
+    </tr>
+    <tr style="font-weight:bold;border-top:2px solid var(--color-dashed,#ccc);">
+      <td>合计</td>
+      <td style="color:#27ae60;">+0.227</td>
+      <td style="color:#27ae60;">+0.129</td>
+      <td style="color:#c0392b;">+0.019</td>
+    </tr>
+  </table>
+  <p style="margin-top:8px;font-size:13px;color:var(--color-text-secondary,#6b6b6b);">
+    ⚠ 理论上直立奖励最高。但核心问题是：<strong>早期随机探索时，蹲下的信号更可靠。</strong><br>
+    网络发现 "降低身体 = 稳定性立刻改善" 比 "努力站直 = 偶尔更高但经常更低" 更容易学习。
+  </p>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>阶段 2：蹲下后伸不直腿</h3>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">物理原因</div>
+  <div class="mockup-body">
+    <div style="display:flex;gap:20px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:200px;">
+        <p><strong>膝盖弯曲时：</strong></p>
+        <p>躯干重心前移 + 力臂变短<br>
+        → 膝关节需要更大的力矩才能伸直<br>
+        → 当前关节强度不足以推起 4kg 躯干</p>
+        <p style="font-size:13px;color:var(--color-text-secondary,#6b6b6b);">膝关节负载 ≈ 躯干重量 × 弯曲力臂<br>弯曲越深，需要的力矩越大</p>
+      </div>
+      <div style="flex:1;min-width:200px;">
+        <p><strong>奖励层面：</strong></p>
+        <p>没有 "膝关节角度惩罚"<br>
+        → 网络不在乎腿弯不弯<br>
+        → 只在乎身体高度和稳定性</p>
+        <p style="font-size:13px;color:var(--color-text-secondary,#6b6b6b);">蹲下 + 腿弯 = 低重心 = 更稳<br>网络没有理由伸直腿</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>阶段 3：尝试迈步 → 倒向弯曲腿一侧</h3>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">摔倒链</div>
+  <div class="mockup-body">
+    <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+      <div style="background:var(--color-dark,#1a1a19);color:white;padding:10px;border-radius:8px;max-width:140px;font-size:13px;">
+        <strong>1️⃣ 不对称蹲姿</strong><br>
+        左腿弯45°<br>
+        右腿弯30°<br>
+        → 重心偏右
+      </div>
+      <span style="font-size:20px;">→</span>
+      <div style="background:var(--color-dark,#1a1a19);color:white;padding:10px;border-radius:8px;max-width:140px;font-size:13px;">
+        <strong>2️⃣ 迈左腿</strong><br>
+        右腿单独承重<br>
+        右髋推不动躯干<br>
+        → 躯干向左倾
+      </div>
+      <span style="font-size:20px;">→</span>
+      <div style="background:#c0392b;color:white;padding:10px;border-radius:8px;max-width:140px;font-size:13px;">
+        <strong>3️⃣ 连锁倾倒</strong><br>
+        倾斜角速度加速<br>
+        右腿弯曲无法支撑<br>
+        → 向右侧倒下
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <p><strong>缺位的奖励信号：</strong></p>
+  <div class="pros-cons">
+    <div class="pros"><h4>现在有的</h4><ul>
+      <li>Alive — 不倒即有</li>
+      <li>Height — 身体高度</li>
+      <li>TrunkStability — 倾斜惩罚</li>
+      <li>CommandTracking — 速度跟踪</li>
+    </ul></div>
+    <div class="cons"><h4>现在没有的</h4><ul>
+      <li>膝关节角度正则 — 不关心腿直不直</li>
+      <li>姿态对称 — 两腿弯度差异无惩罚</li>
+      <li>重心投影 — 重心是否在支撑多边形内</li>
+      <li>单支撑稳定性 — 抬腿时躯干能否维持</li>
+    </ul></div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>核心矛盾</h3>
+  <div style="background:#fef3e2;border:1.5px solid #f0c78e;border-radius:8px;padding:16px;margin-top:8px;">
+    <p style="margin:0;"><strong>网络学到的策略：</strong> "蹲低 + 不动 = 最稳定的奖励流"</p>
+    <p style="margin:4px 0 0;"><strong>我们期望的策略：</strong> "站直 + 交替迈步 = 更高的总奖励"</p>
+    <p style="margin:8px 0 0;font-size:13px;color:var(--color-text-secondary,#6b6b6b);">
+      当前奖励结构下，前者确实更优。要改变行为，必须改变经济学。
+    </p>
+  </div>
+</div>

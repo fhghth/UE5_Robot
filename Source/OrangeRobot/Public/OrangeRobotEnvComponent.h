@@ -88,6 +88,14 @@ struct FOrangeRobotRewardComponents
     //躯干稳定惩罚
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
     float TrunkStabilityPenalty = 0.0f;
+
+    //膝关节伸展惩罚
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float KneeExtensionPenalty = 0.0f;
+
+    //倾倒预警
+    UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Robot|Reward")
+    float TiltWarning = 0.0f;
 };
 
 UENUM(BlueprintType, meta=(Bitflags))
@@ -158,6 +166,7 @@ class ORANGEROBOT_API UOrangeRobotEnvComponent : public UActorComponent, public 
 
 public:
     UOrangeRobotEnvComponent();
+    virtual void BeginPlay() override;
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
     // ========================================================================
@@ -202,6 +211,7 @@ public:
 private:
     float InitialLeftFootDistance = 0.0f;
     float InitialRightFootDistance = 0.0f;
+    bool bEnvConfigLoadedFromCommandLine = false;
 
 public:
     // ========================================================================
@@ -278,7 +288,10 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float AliveReward = 0.02f;
-    
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training", meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float TiltQualityGate = 0.7f;
+
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float StableDoubleSupportRewardScale = 0.1f;
 
@@ -331,7 +344,13 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float HeightDropPenaltyScale = 0.5f;
-    
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float KneeExtensionPenaltyScale = 0.001f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float TiltWarningScale = 1.0f;
+
     /*躯干稳定参数*/
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float TrunkTiltPenaltyScale = 0.1f;
@@ -421,7 +440,13 @@ public:
     float HeadGroundHeightThreshold = 30.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
-    int32 FallPenaltyHorizon = 200;
+    int32 FallPenaltyHorizon = 5;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float RewardClampMin = -2.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
+    float RewardClampMax = 2.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Robot|Training")
     float BodyHeightThreshold = 45.0f;
